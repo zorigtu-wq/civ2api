@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Civ2 Console</title>
+<style>
+:root{
+  --bg:#14120f; --panel:#1d1a16; --panel2:#25211b; --line:#3a332a; --ink:#ece4d6; --dim:#a39886;
+  --accent:#d9a441; --accent2:#7fb3a8; --bad:#d9634a; --good:#8fbf6a; --info:#7aa7d9;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --sans: "Segoe UI", system-ui, sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:14px/1.4 var(--sans)}
+button{font:inherit;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button:active{transform:translateY(1px)}
+button:disabled{opacity:.4;cursor:default}
+input,select{font:inherit;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
+header{display:flex;align-items:center;gap:18px;padding:10px 16px;border-bottom:1px solid var(--line);background:linear-gradient(#1f1b16,#17140f);flex-wrap:wrap}
+header h1{font-size:16px;margin:0;letter-spacing:.06em;color:var(--accent);font-weight:600}
+.stat{font-family:var(--mono);font-size:13px;color:var(--dim)}
+.stat b{color:var(--ink);font-weight:600}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block;background:var(--bad);margin-right:6px;vertical-align:middle}
+.dot.on{background:var(--good);box-shadow:0 0 8px var(--good)}
+main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:12px;padding:12px;height:calc(100% - 52px)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin:0;padding:8px 12px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:8px}
+.left{display:grid;grid-template-rows:minmax(0,1fr) 260px;gap:12px;min-height:0}
+#mapwrap{position:relative;flex:1;min-height:0}
+canvas{display:block;width:100%;height:100%}
+#tip{position:absolute;pointer-events:none;background:#000c;border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:12px var(--mono);display:none;white-space:pre}
+.right{display:flex;flex-direction:column;gap:12px;min-height:0;overflow:auto}
+.right>.panel{flex-shrink:0;overflow:visible}
+.card{padding:12px}
+.unitname{font-size:18px;font-weight:600}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-family:var(--mono);font-size:13px;margin-top:6px}
+.kv span:nth-child(odd){color:var(--dim)}
+.pad{display:grid;grid-template-columns:repeat(3,56px);grid-template-rows:repeat(3,44px);gap:6px;justify-content:center;margin:6px 0}
+.pad button{font-weight:600}
+.pad .c{background:transparent;border-style:dashed;color:var(--dim);font-size:11px}
+.cmds{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.cmds button{font-size:12px;padding:6px 4px}
+.cmds button.warn{border-color:#6b3a2e}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.tabs{display:flex;gap:4px}
+.tabs button{padding:3px 10px;font-size:12px;border-radius:5px}
+.tabs button.sel{border-color:var(--accent);color:var(--accent)}
+.scroll{overflow:auto;flex:1;min-height:0}
+table{border-collapse:collapse;width:100%;font-family:var(--mono);font-size:12px}
+th,td{text-align:left;padding:4px 8px;border-bottom:1px solid #2b261f;white-space:nowrap}
+th{position:sticky;top:0;background:var(--panel);color:var(--dim);font-weight:500}
+tr.act td{color:var(--accent)}
+tbody tr:hover{background:#2a251e;cursor:pointer}
+#log{font-family:var(--mono);font-size:12px;padding:6px 12px}
+#log div{padding:2px 0;border-bottom:1px dotted #2b261f}
+#log .k{display:inline-block;min-width:170px;color:var(--accent2)}
+#log .bad .k{color:var(--bad)} #log .good .k{color:var(--good)} #log .warn .k{color:var(--accent)}
+.muted{color:var(--dim)}
+#popup{position:fixed;inset:0;background:#0009;display:none;align-items:center;justify-content:center;z-index:10}
+#popup .box{width:min(520px,92vw);background:#d7cdb6;color:#1b160f;border:3px ridge #b3a582;border-radius:4px;box-shadow:0 20px 60px #000a}
+#popup .title{background:#8a7d5c;color:#fff4dc;padding:8px 12px;font-weight:600}
+#popup .body{padding:12px 14px;font-family:Georgia,serif;font-size:15px}
+#popup .opts{display:flex;flex-direction:column;gap:4px;margin-top:8px}
+#popup .opts button{background:#e9e0cb;color:#1b160f;border:1px solid #9c8e6c;text-align:left}
+#popup .opts button.cur{outline:2px solid #6c5a2e}
+#popup .btns{display:flex;gap:8px;justify-content:flex-end;padding:10px 14px;border-top:1px solid #b3a582}
+#popup .btns button{background:#c9bc9c;color:#1b160f;border:1px solid #8a7d5c;min-width:80px}
+#popup .meta{font:11px var(--mono);color:#5e5440;margin-top:8px}
+.toast{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);background:#2b241b;border:1px solid var(--accent);padding:8px 14px;border-radius:8px;display:none;z-index:20;font-size:13px}
+.legend{display:flex;gap:10px;font-size:11px;color:var(--dim);flex-wrap:wrap}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+kbd{font:11px var(--mono);border:1px solid var(--line);border-radius:3px;padding:0 4px;color:var(--dim)}
+@media (max-width:900px){main{grid-template-columns:1fr;height:auto}.left{grid-template-rows:420px 300px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>CIV2 · CONSOLE</h1>
+  <span class="stat"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
+  <span class="stat">Turn <b id="turn">–</b></span>
+  <span class="stat">Civ <b id="civ">–</b></span>
+  <span class="stat">Gold <b id="gold">–</b></span>
+  <span class="stat">Gov <b id="gov">–</b></span>
+  <span class="stat">Research <b id="res">–</b></span>
+  <span class="stat">Village <b id="hutcount">–</b></span>
+  <button id="popbadge" style="display:none;border-color:var(--accent);color:var(--accent);padding:3px 10px">● Popup open</button>
+  <span class="stat" style="margin-left:auto">keys
+    <select id="keymethod" title="post = works even when the game is in the background">
+      <option value="post">post</option><option value="sendinput">sendinput</option>
+    </select>
+  </span>
+</header>
+
+<main>
+  <section class="left">
+    <div class="panel">
+      <h2><span>Map <span class="muted" id="mapinfo"></span></span>
+        <span class="row">
+          <label class="muted" style="font-size:11px;text-transform:none;letter-spacing:0"><input type="checkbox" id="follow" checked> follow active unit</label>
+          <button id="zoomout" title="Zoom out">−</button><button id="zoomin" title="Zoom in">+</button>
+        </span>
+      </h2>
+      <div id="mapwrap"><canvas id="map"></canvas><div id="tip"></div></div>
+      <div class="legend" style="padding:6px 12px;border-top:1px solid var(--line)">
+        <span><i style="background:#6aa84f"></i>Grassland</span><span><i style="background:#b8b45a"></i>Plains</span>
+        <span><i style="background:#2f6b2f"></i>Forest</span><span><i style="background:#8d7b4a"></i>Hills</span>
+        <span><i style="background:#7a7a7a"></i>Mountains</span><span><i style="background:#2a5d9f"></i>Ocean</span>
+        <span><i style="background:#f4d03f;border-radius:50% 50% 0 0"></i>Village</span>
+        <span class="muted">· Click a neighbouring tile to move the active unit there</span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2><span class="tabs">
+        <button data-tab="units" class="sel">My units</button>
+        <button data-tab="cities">Cities</button>
+        <button data-tab="civs">Civs</button>
+        <button data-tab="huts">Village</button>
+        <button data-tab="log">Event log</button>
+        <button data-tab="proto">Decisions</button>
+      </span><span class="muted" id="tabinfo"></span></h2>
+      <div class="scroll" id="tabbody"></div>
+    </div>
+  </section>
+
+  <aside class="right">
+    <div class="panel card">
+      <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.1em">Active unit</div>
+      <div class="unitname" id="au_name">—</div>
+      <div class="kv" id="au_kv"></div>
+      <div class="pad" id="pad">
+        <button data-dir="NW" title="NW (7)">↖</button><button data-dir="N" title="N (8)">↑</button><button data-dir="NE" title="NE (9)">↗</button>
+        <button data-dir="W" title="W (4)">←</button><button class="c" data-cmd="center" title="Center (C)">center</button><button data-dir="E" title="E (6)">→</button>
+        <button data-dir="SW" title="SW (1)">↙</button><button data-dir="S" title="S (2)">↓</button><button data-dir="SE" title="SE (3)">↘</button>
+      </div>
+      <div class="cmds">
+        <button data-cmd="fortify">Fortify <kbd>F</kbd></button>
+        <button data-cmd="sentry">Sentry <kbd>S</kbd></button>
+        <button data-cmd="wait">Wait <kbd>W</kbd></button>
+        <button data-cmd="skip">Skip <kbd>␣</kbd></button>
+        <button data-cmd="build_city">City <kbd>B</kbd></button>
+        <button data-cmd="road">Road <kbd>R</kbd></button>
+        <button data-cmd="irrigate">Irrigate <kbd>I</kbd></button>
+        <button data-cmd="mine">Mine <kbd>M</kbd></button>
+        <button data-cmd="home_city">Home <kbd>H</kbd></button>
+        <button data-cmd="pillage" class="warn">Pillage</button>
+        <button data-cmd="disband" class="warn">Disband</button>
+        <button data-cmd="end_turn" class="warn">End turn</button>
+      </div>
+    </div>
+
+    <div class="panel card" id="taskcard">
+      <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;display:flex;justify-content:space-between">
+        <span>Tasks · fastest path</span>
+        <label style="text-transform:none;letter-spacing:0"><input type="checkbox" id="runner_on" checked> run</label>
+      </div>
+      <div class="row" style="margin-bottom:6px">
+        <select id="t_unit" style="flex:1;min-width:0"></select>
+      </div>
+      <div class="row" style="margin-bottom:6px">
+        <input id="t_x" type="number" placeholder="x" style="width:70px"> <input id="t_y" type="number" placeholder="y" style="width:70px">
+        <button id="t_preview">Preview path</button>
+        <button id="t_go" style="border-color:var(--accent);color:var(--accent)">Go</button>
+      </div>
+      <div class="row" style="margin-bottom:6px">
+        <button id="t_hut" style="flex:1">To nearest village</button>
+        <label class="muted" style="font-size:11px" title="If an untasked unit is active, press W (wait) to cycle to a tasked unit"><input type="checkbox" id="autocycle"> auto-cycle</label>
+      </div>
+      <div class="muted" style="font-size:11px" id="t_info"><b>Right-click</b> the map to pick a target</div>
+      <details id="huntbox" style="margin-top:8px;border-top:1px solid var(--line);padding-top:6px">
+        <summary style="cursor:pointer;color:var(--accent)">Village hunt (save → enter → load loop)</summary>
+        <div class="muted" style="font-size:11px;margin:6px 0">Sends the unit above to the village at x,y; as soon as it is next to it, saves and enters. If no qualifying unit is gained, loads the save and retries.</div>
+        <div class="row" style="margin-bottom:6px">
+          <label class="muted" style="font-size:12px">min moves <input id="h_moves" type="number" value="2" min="1" max="9" style="width:52px"></label>
+          <label class="muted" style="font-size:12px">max attempts <input id="h_max" type="number" value="20" min="1" max="200" style="width:60px"></label>
+        </div>
+        <div class="row" style="margin-bottom:6px">
+          <label class="muted" style="font-size:12px"><input type="checkbox" id="h_then_on"> then go to</label>
+          <input id="h_tx" type="number" placeholder="x" style="width:62px"> <input id="h_ty" type="number" placeholder="y" style="width:62px">
+        </div>
+        <div class="row"><button id="h_go" style="flex:1;border-color:var(--accent);color:var(--accent)">Start</button><button id="h_cancel">Stop</button></div>
+        <div id="h_status" style="margin-top:6px;font-family:var(--mono);font-size:12px"></div>
+      </details>
+      <details id="campbox" style="margin-top:8px;border-top:1px solid var(--line);padding-top:6px">
+        <summary style="cursor:pointer;color:var(--accent)">Campaign: until N units with 2+ moves</summary>
+        <div class="muted" style="font-size:11px;margin:6px 0">Every unit with 2+ moves heads to the nearest village and takes it with the save/load loop. Other units are skipped with SPACE and turns are ended automatically. Stops on any popup with choices.</div>
+        <div class="row" style="margin-bottom:6px">
+          <label class="muted" style="font-size:12px">gain <select id="c_goal"><option value="unit">2-move unit</option><option value="city">city</option></select></label>
+          <label class="muted" style="font-size:12px">target <input id="c_target" type="number" value="10" min="1" max="100" style="width:56px"></label>
+          <label class="muted" style="font-size:12px">min moves <input id="c_moves" type="number" value="2" min="1" max="9" style="width:48px"></label>
+          <label class="muted" style="font-size:12px">max turns <input id="c_turns" type="number" value="40" min="1" max="500" style="width:56px"></label>
+        </div>
+        <div class="row"><button id="c_go" style="flex:1;border-color:var(--accent);color:var(--accent)">Start campaign</button><button id="c_cancel">Stop</button></div>
+        <div id="c_status" style="margin-top:6px;font-family:var(--mono);font-size:12px"></div>
+      </details>
+      <div id="t_status" style="display:none;margin-top:8px;padding:6px 8px;border:1px solid var(--accent);border-radius:6px;font-size:12px;color:var(--accent)"></div>
+      <div id="tasklist" style="margin-top:8px;font-family:var(--mono);font-size:12px"></div>
+    </div>
+
+    <div class="panel card">
+      <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">Send key</div>
+      <div class="row">
+        <input id="rawkey" placeholder="e.g. shift+d, ctrl+n, enter, F1" style="flex:1;min-width:0">
+        <button id="sendkey">Send</button>
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:6px">Browser shortcuts: numpad/arrows = move, F/S/W/B/R/I/M, Space = skip</div>
+    </div>
+
+    <div class="panel card">
+      <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">Last action</div>
+      <div id="last" style="font-family:var(--mono);font-size:12px;white-space:pre-wrap" class="muted">—</div>
+    </div>
+  </aside>
+</main>
+
+<div id="popup"><div class="box">
+  <div class="title" id="pp_title"></div>
+  <div class="body"><div id="pp_lines"></div><div class="opts" id="pp_opts"></div><div class="meta" id="pp_meta"></div></div>
+  <div class="btns" id="pp_btns"></div>
+</div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const TERR = {Desert:"#d8c27a",Plains:"#b8b45a",Grassland:"#6aa84f",Forest:"#2f6b2f",Hills:"#8d7b4a",
+  Mountains:"#7a7a7a",Tundra:"#a9b7a8",Glacier:"#e8f0f4",Swamp:"#5d7a5a",Jungle:"#2e7d4f",Ocean:"#2a5d9f"};
+const CIVCOL = ["#c0392b","#f2f2f2","#3fae49","#3d6fd9","#f1c40f","#36c6d3","#e67e22","#9b59b6"];
+const DELTA = {N:[0,-2],NE:[1,-1],E:[2,0],SE:[1,1],S:[0,2],SW:[-1,1],W:[-2,0],NW:[-1,-1]};
+const KEYDIR = {"8":"N","9":"NE","6":"E","3":"SE","2":"S","1":"SW","4":"W","7":"NW",
+  ArrowUp:"N",ArrowRight:"E",ArrowDown:"S",ArrowLeft:"W",PageUp:"NE",PageDown:"SE",Home:"NW",End:"SW"};
+const KEYCMD = {f:"fortify",s:"sentry",w:"wait"," ":"skip",b:"build_city",r:"road",i:"irrigate",m:"mine",h:"home_city",c:"center"};
+
+let S = null, tiles = [], view = {cx:null, cy:null, tw:48}, tab = "units", busy = false;
+let lastSeq = 0, logItems = [], huts = [], hutsAt = 0;
+let tasks = [], preview = null, tasksAt = 0, runnerStatus = {}, hunts = [], camp = null;
+
+async function api(path, body){
+  const opt = body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)} : {};
+  const r = await fetch(path, opt);
+  const j = await r.json().catch(()=>({error:"bad json"}));
+  if(!r.ok) throw Object.assign(new Error(j.error || r.statusText), {status:r.status, body:j});
+  return j;
+}
+function toast(msg){ const t=$("#toast"); t.textContent=msg; t.style.display="block"; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display="none",2600); }
+function esc(s){ return String(s ?? "").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+function me(){ return S ? S.human_civ : -1; }
+function activeUnit(){ if(!S || S.active_unit==null) return null; return S.units.find(u=>u.index===S.active_unit) || null; }
+
+// ---------------------------------------------------------------- polling
+async function pollState(){
+  try{
+    S = await api("/state");
+    $("#dot").classList.add("on"); $("#conn").textContent = "connected";
+    if(Date.now()-hutsAt > 3000){ hutsAt = Date.now(); try{ const h = await api("/huts"); huts = h.huts; }catch(e){} }
+    if(Date.now()-tasksAt > 1200){ try{ hunts = (await api("/hunt")).hunts; camp = await api("/campaign"); }catch(e){} }
+    if(Date.now()-tasksAt > 1200){ tasksAt = Date.now(); try{ const t = await api("/tasks"); tasks = t.tasks; runnerStatus = t.status||{}; $("#runner_on").checked = t.enabled; $("#autocycle").checked = t.auto_cycle; }catch(e){} }
+    renderHeader(); renderActive(); renderTab(); renderPopup(); renderTasks();
+    const au = activeUnit();
+    if($("#follow").checked && au && (au.x!==view.cx || au.y!==view.cy)){ view.cx=au.x; view.cy=au.y; await loadTiles(); }
+    else if(view.cx==null && S.cursor){ view.cx=S.cursor[0]; view.cy=S.cursor[1]; await loadTiles(); }
+    drawMap();
+  }catch(e){
+    $("#dot").classList.remove("on");
+    $("#conn").textContent = e.status===503 ? "Civ2 is not running (start it with the launcher)" : "error: "+e.message;
+  }
+}
+let proto = [], protoSeq = 0;
+async function pollProtocol(){
+  for(;;){
+    try{
+      const r = await api(`/protocol?since=${protoSeq}`);
+      if(r.length){ proto.push(...r); protoSeq = r[r.length-1].seq; if(proto.length>1500) proto.splice(0, proto.length-1500); if(tab==="proto") renderTab(); }
+    }catch(e){}
+    await new Promise(r=>setTimeout(r,2000));
+  }
+}
+pollProtocol();
+async function pollEvents(){
+  for(;;){
+    try{
+      const r = await api(`/events?since=${lastSeq}&wait=20`);
+      for(const e of r.events){ lastSeq = Math.max(lastSeq, e.seq); addLog(e); }
+      if(!r.events.length) lastSeq = Math.max(lastSeq, r.last_seq);
+    }catch(e){ await new Promise(r=>setTimeout(r,2000)); }
+  }
+}
+async function loadTiles(){
+  if(view.cx==null) return;
+  const c = $("#map"), cols = Math.ceil(c.clientWidth/(view.tw/2))+4, rows = Math.ceil(c.clientHeight/(view.tw/4))+4;
+  const x0 = view.cx - Math.floor(cols/2), y0 = Math.max(0, view.cy - Math.floor(rows/2));
+  try{ tiles = await api(`/tiles?x=${x0}&y=${y0}&w=${cols}&h=${rows}`); view.x0=x0; view.y0=y0; }catch(e){}
+}
+
+// ---------------------------------------------------------------- render
+function renderHeader(){
+  $("#turn").textContent = S.turn;
+  $("#hutcount").textContent = huts.length;
+  const civ = (S.civs||[]).find(c=>c.id===me());
+  $("#civ").textContent = civ ? `${civ.name} (#${civ.id})` : me();
+  $("#gold").textContent = civ ? civ.gold : "–";
+  $("#gov").textContent = civ ? civ.government : "–";
+  $("#res").textContent = civ && civ.researching ? `${civ.researching} ${civ.beakers}` : "–";
+}
+function renderActive(){
+  const u = activeUnit();
+  $("#au_name").textContent = u ? `${u.type_name}  #${u.id}` : (S.popup ? "Popup open" : "No active unit");
+  $("#au_kv").innerHTML = u ? [
+    ["Position", `(${u.x}, ${u.y})`], ["HP", `${u.hp}/${u.hp_max}`], ["Moves", u.moves_left],
+    ["Veteran", u.veteran?"yes":"no"], ["Orders", u.orders||"—"], ["Home", u.home_city ?? "—"]
+  ].map(([k,v])=>`<span>${k}</span><span>${esc(v)}</span>`).join("") : "";
+  document.querySelectorAll("#pad button[data-dir]").forEach(b=>b.disabled = !u || !!S.popup);
+}
+function renderTab(){
+  const body = $("#tabbody");
+  if(tab==="units"){
+    const us = S.units.filter(u=>u.owner===me());
+    $("#tabinfo").textContent = `${us.length} / ${S.units.length} total`;
+    body.innerHTML = `<table><thead><tr><th>#</th><th>Type</th><th>x,y</th><th>HP</th><th>Moves</th><th>Orders</th><th>Vet</th></tr></thead><tbody>${
+      us.map(u=>`<tr class="${u.index===S.active_unit?"act":""}" data-x="${u.x}" data-y="${u.y}"><td>${u.id}</td><td>${esc(u.type_name)}</td><td>${u.x},${u.y}</td><td>${u.hp}/${u.hp_max}</td><td>${u.moves_left}</td><td>${esc(u.orders||"")}</td><td>${u.veteran?"V":""}</td></tr>`).join("")
+    }</tbody></table>`;
+  }else if(tab==="cities"){
+    $("#tabinfo").textContent = `${S.cities.length} cities`;
+    body.innerHTML = `<table><thead><tr><th>Name</th><th>Owner</th><th>x,y</th><th>Size</th><th>Production</th><th>Shields</th><th>Status</th></tr></thead><tbody>${
+      S.cities.map(c=>`<tr class="${c.owner===me()?"act":""}" data-x="${c.x}" data-y="${c.y}"><td>${esc(c.name)}</td><td>${esc(civName(c.owner))}</td><td>${c.x},${c.y}</td><td>${c.size}</td><td>${esc(c.producing.name)}</td><td>${c.shields}</td><td>${c.disorder?"⚠ disorder":c.wltkd?"WLTKD":""}</td></tr>`).join("")
+    }</tbody></table>`;
+  }else if(tab==="civs"){
+    $("#tabinfo").textContent = "";
+    body.innerHTML = `<table><thead><tr><th>#</th><th>Civ</th><th>Alive</th><th>Gold</th><th>Gov</th><th>Research</th><th>Techs</th><th>Units</th><th>Cities</th></tr></thead><tbody>${
+      S.civs.map(c=>`<tr class="${c.id===me()?"act":""}"><td><span style="color:${CIVCOL[c.id]}">■</span> ${c.id}</td><td>${esc(c.name)}</td><td>${c.alive?"✓":"✗"}</td><td>${c.gold}</td><td>${esc(c.government)}</td><td>${esc(c.researching||"")}</td><td>${c.techs}</td><td>${S.units.filter(u=>u.owner===c.id).length}</td><td>${S.cities.filter(x=>x.owner===c.id).length}</td></tr>`).join("")
+    }</tbody></table>`;
+  }else if(tab==="huts"){
+    const known = huts.filter(h=>h.explored_by_me).length;
+    $("#tabinfo").textContent = `${huts.length} villages · ${known} in explored land`;
+    body.innerHTML = `<table><thead><tr><th>x,y</th><th>Terrain</th><th>Distance (from active unit)</th><th>Explored</th></tr></thead><tbody>${
+      huts.map(h=>`<tr data-x="${h.x}" data-y="${h.y}" class="${h.explored_by_me?"act":""}"><td>${h.x},${h.y}</td><td>${esc(h.terrain)}${h.river?" + river":""}</td><td>${h.distance ?? "–"}</td><td>${h.explored_by_me?"✓":""}</td></tr>`).join("")
+    }</tbody></table>`;
+  }else if(tab==="proto"){
+    $("#tabinfo").textContent = `${proto.length} decisions · logs/decisions.jsonl`;
+    const AC = {runner:"#ffd36b", campaign:"#d9a441", hunt:"#5fa8ff", city:"#7cd67c", research:"#c58cff", save:"#999"};
+    body.innerHTML = `<table><thead><tr><th>Time</th><th>Turn</th><th>Who</th><th>Action</th><th>Why</th></tr></thead><tbody>${
+      proto.slice().reverse().map(e=>`<tr><td class="muted">${e.time}</td><td>${e.turn??""}</td><td style="color:${AC[e.actor]||"#ccc"}">${esc(e.actor)}</td><td>${esc(e.action)}</td><td style="white-space:normal">${esc(e.why)}</td></tr>`).join("")
+    }</tbody></table>`;
+  }else{
+    $("#tabinfo").textContent = `${logItems.length} event`;
+    body.innerHTML = `<div id="log">${logItems.slice().reverse().map(fmtEvent).join("")}</div>`;
+  }
+}
+function civName(id){ const c=(S.civs||[]).find(c=>c.id===id); return c ? c.name : `#${id}`; }
+
+function renderPopup(){
+  const p = S.popup, box = $("#popup");
+  if(!p){ box.style.display="none"; box._ptr=null; $("#popbadge").style.display="none"; return; }
+  const sig = p.ptr + "|" + p.selected_option + "|" + (p.lines||[]).join("|");
+  $("#popbadge").style.display = "inline";
+  if(box._hidden===sig){ box.style.display="none"; return; }
+  box.style.display="flex";
+  if(box._ptr===sig) return; box._ptr=sig;
+  $("#pp_title").textContent = p.title || "(untitled popup)";
+  $("#pp_lines").innerHTML = (p.lines||[]).map(l=>`<div>${esc(l)}</div>`).join("");
+  $("#pp_opts").innerHTML = (p.options||[]).map(o=>`<button data-opt="${o.index}" class="${o.index===p.selected_option?"cur":""}">${esc(o.text)}</button>`).join("");
+  const btns = (p.buttons||[]).length ? p.buttons : [{std_type:"ok",text:"OK"}];
+  $("#pp_btns").innerHTML = `<button id="pp_hide" style="margin-right:auto;background:transparent">Hide</button>`
+    + btns.map(b=>`<button data-btn="${esc(b.std_type)}">${esc(b.text||b.std_type)}</button>`).join("");
+  $("#pp_hide").onclick = ()=>{ box._hidden = sig; box.style.display="none"; };
+  $("#pp_meta").textContent = `section: ${p.section||"?"}` + ((p.options||[]).length ? " · clicking an option selects it and presses OK" : "");
+}
+
+function fmtEvent(e){
+  const t = new Date(e.t*1000).toLocaleTimeString();
+  let cls = "", txt = "";
+  const u = e.unit;
+  switch(e.kind){
+    case "unit_moved": txt = `${e.type} #${e.id} (${civName(e.owner)}) ${e.frm} → ${e.to}`; break;
+    case "unit_damaged": cls="bad"; txt = `${e.type} #${e.id} ${civName(e.owner)} HP ${e.hp_old}→${e.hp_new} @${e.at}`; break;
+    case "foreign_unit_appeared": cls="warn"; txt = `${u.type_name} (${civName(u.owner)}) @${u.x},${u.y}`; break;
+    case "my_unit_lost": cls="bad"; txt = `${u.type_name} #${u.id} @${u.x},${u.y}`; break;
+    case "my_unit_created": cls="good"; txt = `${u.type_name} #${u.id} @${u.x},${u.y}`; break;
+    case "city_lost": cls="bad"; txt = `${e.name} → ${civName(e.new_owner)}`; break;
+    case "city_captured": cls="good"; txt = `${e.name}`; break;
+    case "city_founded": cls="good"; txt = `${e.city.name} (${civName(e.city.owner)})`; break;
+    case "turn_changed": cls="warn"; txt = `${e.old} → ${e.new}`; break;
+    case "popup_opened": cls="warn"; txt = `${e.popup.title||""} ${(e.popup.lines||[]).join(" / ")}`; break;
+    case "popup_closed": txt = e.title||""; break;
+    case "task_created": cls="good"; txt = `${e.task.unit} #${e.task.unit_id} → (${e.task.goal}) ${e.plan_turns} turns`; break;
+    case "task_step": txt = `${e.unit} #${e.unit_id} → (${e.to}) via ${e.via} · MP ${e.predicted}/${e.observed ?? "?"} · ${e.remaining_steps} left`; break;
+    case "task_done": cls="good"; txt = `${e.task.unit} #${e.task.unit_id} (${e.task.goal}) ${e.task.note||""}`; break;
+    case "task_failed": cls="bad"; txt = `${e.task.unit} #${e.task.unit_id}: ${e.task.note||""}`; break;
+    case "task_waiting": cls="warn"; txt = `${e.task.unit} #${e.task.unit_id}: ${e.task.note||""}`; break;
+    case "hunt_status": cls = e.status==="success"?"good":["failed","gave_up"].includes(e.status)?"bad":"warn"; txt = `#${e.hunt} ${e.status} ${e.message||""}`; break;
+    case "hunt_attempt": cls = e.outcome.success?"good":""; txt = `#${e.hunt} attempt ${e.attempt}: ${e.outcome.success?"✓ "+e.outcome.gained.map(g=>g.type).join(","):"✗ "+(e.outcome.new_units.map(n=>n.type).join(",")||"no unit")}${e.outcome.gold?" gold "+e.outcome.gold:""}`; break;
+    case "hunt_saved": txt = e.path; break;
+    case "campaign": cls="warn"; txt = e.message; break;
+    case "task_cost_mismatch": cls="warn"; txt = `${e.from}→${e.to} via ${e.via} (${e.terrain}): planned ${e.predicted}, actual ${e.observed}`; break;
+    case "city_size_changed": txt = `${e.name} ${e.old}→${e.new}`; break;
+    case "city_production_changed": txt = `${e.name}: ${e.old&&e.old.name} → ${e.new&&e.new.name}`; break;
+    default: txt = JSON.stringify(Object.fromEntries(Object.entries(e).filter(([k])=>!["seq","t","kind"].includes(k)))).slice(0,160);
+  }
+  return `<div class="${cls}"><span class="muted">${t}</span> <span class="k">${esc(e.kind)}</span> ${esc(txt)}</div>`;
+}
+function addLog(e){ logItems.push(e); if(logItems.length>500) logItems.shift(); if(tab==="log") renderTab();
+  if(["task_done","task_failed"].includes(e.kind)) { tasksAt=0; toast(e.kind==="task_done"?`✓ ${e.task.unit} reached its target`:`✗ ${e.task.unit}: ${e.task.note}`); }
+  if(["popup_opened","my_unit_lost","city_lost"].includes(e.kind) || (e.kind==="unit_damaged" && S && e.owner===me())) toast(e.kind); }
+
+// ---------------------------------------------------------------- map
+function tileXY(x,y){ // centre of tile in canvas px
+  const w=view.tw, h=w/2, c=$("#map");
+  let dx = x - view.cx;
+  const W2 = S && S.map ? S.map.width2 : 0;
+  if(W2 && !(S.map.flat)){ dx = ((dx % W2) + W2 + W2/2) % W2 - W2/2; }   // round world: wrap x
+  return [ dx * w/2 + c.clientWidth/2, (y - view.cy) * h/2 + c.clientHeight/2 ];
+}
+function drawMap(){
+  const c = $("#map"), dpr = window.devicePixelRatio||1;
+  if(c.width !== c.clientWidth*dpr || c.height !== c.clientHeight*dpr){ c.width=c.clientWidth*dpr; c.height=c.clientHeight*dpr; }
+  const g = c.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0);
+  g.fillStyle="#0c0b09"; g.fillRect(0,0,c.clientWidth,c.clientHeight);
+  if(view.cx==null || !S) return;
+  const w=view.tw, h=w/2, mask = 1<<me();
+  for(const t of tiles){
+    const [px,py] = tileXY(t.x,t.y);
+    g.beginPath(); g.moveTo(px,py-h/2); g.lineTo(px+w/2,py); g.lineTo(px,py+h/2); g.lineTo(px-w/2,py); g.closePath();
+    g.fillStyle = TERR[t.terrain] || "#444"; g.globalAlpha = (t.explored_mask & mask) ? 1 : .35; g.fill(); g.globalAlpha=1;
+    g.strokeStyle="#0003"; g.stroke();
+    if(t.river){ g.strokeStyle="#5fa8ff"; g.lineWidth=2; g.beginPath(); g.moveTo(px-w/4,py-h/4); g.lineTo(px+w/4,py+h/4); g.stroke(); g.lineWidth=1; }
+    if(t.road){ g.strokeStyle= t.railroad ? "#222" : "#7a5a32"; g.beginPath(); g.moveTo(px-w/4,py+h/4); g.lineTo(px+w/4,py-h/4); g.stroke(); }
+    if(t.hut){ // little hut: roof + body
+      g.fillStyle="#f4d03f"; g.strokeStyle="#3b2a10";
+      g.beginPath(); g.moveTo(px-7,py+1); g.lineTo(px,py-7); g.lineTo(px+7,py+1); g.closePath(); g.fill(); g.stroke();
+      g.fillStyle="#a0522d"; g.fillRect(px-5,py+1,10,6); g.strokeRect(px-5,py+1,10,6);
+    }
+    if(t.pollution){ g.fillStyle="#000a"; g.fillText("☁",px-4,py+4); }
+  }
+  g.font="bold 11px Segoe UI, sans-serif"; g.textAlign="center";
+  for(const ct of S.cities){
+    const [px,py]=tileXY(ct.x,ct.y); if(px<-60||py<-40||px>c.clientWidth+60||py>c.clientHeight+40) continue;
+    g.fillStyle=CIVCOL[ct.owner]||"#999"; g.strokeStyle="#000"; g.fillRect(px-9,py-9,18,18); g.strokeRect(px-9,py-9,18,18);
+    g.fillStyle = ct.owner===1||ct.owner===4||ct.owner===5 ? "#000" : "#fff"; g.fillText(ct.size,px,py+4);
+    g.fillStyle="#fff"; g.strokeStyle="#000"; g.lineWidth=3; g.strokeText(ct.name,px,py+22); g.fillText(ct.name,px,py+22); g.lineWidth=1;
+  }
+  if(preview && preview.ok){
+    const u0 = S.units.find(u=>u.id===preview.unit_id);
+    const pts = [[u0?u0.x:preview.from_[0], u0?u0.y:preview.from_[1]], ...preview.steps.map(s=>[s.x,s.y])];
+    g.lineWidth=3; g.strokeStyle="#ffd36bcc"; g.beginPath();
+    pts.forEach(([x,y],i)=>{ const [px,py]=tileXY(x,y); i?g.lineTo(px,py):g.moveTo(px,py); }); g.stroke(); g.lineWidth=1;
+    preview.steps.forEach((s,i)=>{ const [px,py]=tileXY(s.x,s.y);
+      g.fillStyle = s.via==="road"||s.via==="railroad" ? "#c08040" : s.via==="river" ? "#5fa8ff" : "#ffd36b";
+      g.beginPath(); g.arc(px,py,4,0,7); g.fill();
+      const nxt = preview.steps[i+1]; if(!nxt || nxt.turn!==s.turn){ g.fillStyle="#000c"; g.fillRect(px+6,py-8,18,14); g.fillStyle="#fff"; g.font="bold 10px sans-serif"; g.fillText(s.turn+1,px+15,py+3); g.font="bold 11px Segoe UI, sans-serif"; }
+    });
+  }
+  for(const t of tasks){ if(!["pending","running","waiting_next_turn","paused_popup"].includes(t.status)) continue;
+    const [px,py]=tileXY(t.goal[0],t.goal[1]); g.strokeStyle="#ff6b6b"; g.lineWidth=2;
+    g.beginPath(); g.moveTo(px,py+6); g.lineTo(px,py-14); g.stroke(); g.fillStyle="#ff6b6b"; g.beginPath(); g.moveTo(px,py-14); g.lineTo(px+10,py-10); g.lineTo(px,py-6); g.fill(); g.lineWidth=1; }
+  const au = activeUnit(), stacks = {};
+  for(const u of S.units){ const k=u.x+","+u.y; (stacks[k]=stacks[k]||[]).push(u); }
+  for(const k in stacks){
+    const us = stacks[k], u = us.find(x=>au&&x.index===au.index) || us[0];
+    const [px,py]=tileXY(u.x,u.y); if(px<-30||py<-30||px>c.clientWidth+30||py>c.clientHeight+30) continue;
+    const mine = u.owner===me();
+    g.beginPath(); g.arc(px,py-4,7,0,7); g.fillStyle=CIVCOL[u.owner]||"#999"; g.fill();
+    g.lineWidth = mine?2.5:1; g.strokeStyle = mine?"#d9a441":"#000"; g.stroke(); g.lineWidth=1;
+    if(us.length>1){ g.fillStyle="#fff"; g.font="bold 10px sans-serif"; g.fillText(us.length,px+10,py-10); g.font="bold 11px Segoe UI, sans-serif"; }
+  }
+  if(au){
+    const [px,py]=tileXY(au.x,au.y), pulse = 10 + 3*Math.sin(Date.now()/200);
+    g.beginPath(); g.arc(px,py-4,pulse,0,7); g.strokeStyle="#ffd36b"; g.lineWidth=2; g.stroke(); g.lineWidth=1;
+    for(const d in DELTA){ const [nx,ny]=tileXY(au.x+DELTA[d][0],au.y+DELTA[d][1]); g.fillStyle="#ffd36b55"; g.beginPath(); g.arc(nx,ny,3,0,7); g.fill(); }
+  }
+  $("#mapinfo").textContent = `· centre (${view.cx}, ${view.cy}) · ${S.map ? S.map.width2/2+"×"+S.map.height : ""}`;
+}
+function tileAt(mx,my){
+  let best=null, bd=1e9;
+  for(const t of tiles){ const [px,py]=tileXY(t.x,t.y); const d=Math.abs(mx-px)/(view.tw/2)+Math.abs(my-py)/(view.tw/4); if(d<bd){bd=d;best=t;} }
+  return bd<=1.05 ? best : null;
+}
+$("#map").addEventListener("mousemove", ev=>{
+  const r=ev.target.getBoundingClientRect(), t=tileAt(ev.clientX-r.left, ev.clientY-r.top), tip=$("#tip");
+  if(!t||!S){ tip.style.display="none"; return; }
+  const us=S.units.filter(u=>u.x===t.x&&u.y===t.y), ct=S.cities.find(c=>c.x===t.x&&c.y===t.y);
+  tip.textContent = `(${t.x}, ${t.y}) ${t.terrain}${t.river?" + river":""}${t.road?" road":""}${t.irrigation?" irr":""}${t.mine?" mine":""}`
+    + (t.hut?`\n🛖 Village`:"")
+    + (ct?`\n🏛 ${ct.name} (${civName(ct.owner)}) size ${ct.size}`:"")
+    + us.map(u=>`\n• ${u.type_name} #${u.id} ${civName(u.owner)} HP ${u.hp}/${u.hp_max}`).join("");
+  tip.style.display="block"; tip.style.left=(ev.clientX-r.left+14)+"px"; tip.style.top=(ev.clientY-r.top+14)+"px";
+});
+$("#map").addEventListener("mouseleave", ()=>$("#tip").style.display="none");
+$("#map").addEventListener("click", ev=>{
+  const r=ev.target.getBoundingClientRect(), t=tileAt(ev.clientX-r.left, ev.clientY-r.top), au=activeUnit();
+  if(!t) return;
+  if(au){ for(const d in DELTA){ if(au.x+DELTA[d][0]===t.x && au.y+DELTA[d][1]===t.y) return move(d); } }
+  $("#follow").checked=false; view.cx=t.x; view.cy=t.y; loadTiles().then(drawMap);
+});
+$("#map").addEventListener("contextmenu", ev=>{
+  ev.preventDefault();
+  const r=ev.target.getBoundingClientRect(), t=tileAt(ev.clientX-r.left, ev.clientY-r.top);
+  if(!t) return; $("#t_x").value=t.x; $("#t_y").value=t.y; doPreview();
+});
+$("#zoomin").onclick = ()=>{ view.tw=Math.min(96,view.tw+12); loadTiles().then(drawMap); };
+$("#zoomout").onclick = ()=>{ view.tw=Math.max(24,view.tw-12); loadTiles().then(drawMap); };
+window.addEventListener("resize", ()=>loadTiles().then(drawMap));
+setInterval(()=>{ if(activeUnit()) drawMap(); }, 120);
+
+// ---------------------------------------------------------------- tasks
+const STATUS_MN = {pending:"pending", running:"running", waiting_next_turn:"next turn", paused_popup:"paused on popup",
+  done:"arrived ✓", failed:"failed ✗", cancelled:"cancelled"};
+function selUnit(){ const v=+$("#t_unit").value; return S && S.units.find(u=>u.id===v); }
+function renderTasks(){
+  const sel=$("#t_unit"), mine=S.units.filter(u=>u.owner===me()), au=activeUnit(), cur=+sel.value;
+  const opts = mine.map(u=>`<option value="${u.id}">${esc(u.type_name)} #${u.id} (${u.x},${u.y})${au&&u.id===au.id?" ★":""}</option>`).join("");
+  if(sel._opts!==opts){ sel.innerHTML=opts; sel._opts=opts; sel.value = mine.some(u=>u.id===cur) ? cur : (au?au.id:(mine[0]||{}).id); }
+  const h = hunts[0];
+  $("#h_status").innerHTML = h ? `<b>#${h.id}</b> unit ${h.unit_id} → (${h.hut}) · <span style="color:${h.status==="success"?"var(--good)":["failed","gave_up"].includes(h.status)?"var(--bad)":"var(--accent)"}">${esc(h.status)}</span> · attempt ${h.attempts}/${h.max_attempts}<div class="muted">${esc(h.message||"")}</div>`
+    + (h.outcomes||[]).slice(-5).reverse().map(o=>`<div class="muted">#${o.attempt}: ${o.success?"✓":"✗"} ${o.new_units.map(n=>n.type+" "+n.moves+"mv").join(", ")||"no unit"}${o.gold?" · gold "+(o.gold>0?"+":"")+o.gold:""}${o.techs?" · tech +"+o.techs:""}${o.barbarians.length?" · barbarians "+o.barbarians.length:""}${o.unit_alive?"":" · unit died"}</div>`).join("") : "";
+  if(h && h.live) $("#huntbox").open = true;
+  if(camp && camp.status !== "none"){
+    $("#c_status").innerHTML = `<b>${esc(camp.status)}</b> · ${camp.have}/${camp.target} · turn ${camp.turn}<div class="muted">${esc(camp.message||"")}</div>`
+      + (camp.hunters||[]).map(x=>`<div class="muted">${esc(x.unit)} #${x.id} (${x.x},${x.y}) → ${x.village?"village ("+x.village+")":"—"}</div>`).join("")
+      + (camp.gained||[]).slice(-6).map(g=>`<div style="color:var(--good)">✓ ${esc(g.unit)} @${g.village} (${g.attempts})</div>`).join("");
+    if(camp.live) $("#campbox").open = true;
+  }
+  $("#t_status").textContent = runnerStatus.message || "";
+  $("#t_status").style.display = runnerStatus.message ? "block" : "none";
+  $("#tasklist").innerHTML = tasks.slice().reverse().slice(0,8).map(t=>{
+    const live=["pending","running","waiting_next_turn","paused_popup"].includes(t.status);
+    return `<div style="padding:4px 0;border-top:1px dotted #2b261f">
+      <b>${esc(t.unit)} #${t.unit_id}</b> → (${t.goal}) <span style="color:${t.status==="done"?"var(--good)":t.status==="failed"?"var(--bad)":"var(--accent)"}">${STATUS_MN[t.status]||t.status}</span>
+      ${live?`<button data-cancel="${t.unit_id}" style="float:right;padding:1px 8px;font-size:11px">cancel</button>`:""}
+      <div class="muted">step ${t.steps_done} · ETA ${t.eta_turns} turns${t.note?" · "+esc(t.note):""}</div></div>`;
+  }).join("") || '<div class="muted">No tasks</div>';
+}
+async function doPreview(){
+  const u=selUnit(), x=+$("#t_x").value, y=+$("#t_y").value; if(!u||isNaN(x)||isNaN(y)) return;
+  try{
+    preview = await api(`/plan?unit_id=${u.id}&x=${x}&y=${y}`);
+    if(preview.ok){
+      const via = preview.steps.reduce((m,s)=>(m[s.via]=(m[s.via]||0)+1,m),{});
+      $("#t_info").innerHTML = `${esc(u.type_name)} → (${x},${y}): <b>${preview.turns} turns</b>, ${preview.steps.length} steps · `
+        + Object.entries(via).map(([k,v])=>`${k} ${v}`).join(", ") + ` · ${preview.first_turn_steps} steps this turn`;
+    }else $("#t_info").textContent = "⚠ " + preview.error;
+  }catch(e){ $("#t_info").textContent = "⚠ " + e.message; preview=null; }
+  drawMap();
+}
+$("#t_preview").onclick = doPreview;
+$("#t_unit").onchange = ()=>{ preview=null; if($("#t_x").value) doPreview(); };
+$("#t_go").onclick = async ()=>{
+  const u=selUnit(), x=+$("#t_x").value, y=+$("#t_y").value; if(!u||isNaN(x)||isNaN(y)) return toast("choose a unit, x and y");
+  try{ const r = await api("/tasks", {unit_id:u.id, x, y});
+    if(r.ok){ toast(`${u.type_name} → (${x},${y}), ${r.plan.turns} turns: ${r.message||""}`); preview=r.plan; preview.unit_id=u.id; tasksAt=0; }
+    else toast("⚠ "+r.error);
+  }catch(e){ toast(e.message); }
+};
+$("#t_hut").onclick = ()=>{
+  const u=selUnit(); if(!u||!huts.length) return toast("no villages");
+  const d=h=>{ const dx=Math.abs(h.x-u.x), dy=Math.abs(h.y-u.y); return Math.max(dy,(dx+dy)/2); };
+  const h=huts.slice().sort((a,b)=>d(a)-d(b))[0]; $("#t_x").value=h.x; $("#t_y").value=h.y; doPreview();
+};
+$("#h_go").onclick = async ()=>{
+  const u=selUnit(), x=+$("#t_x").value, y=+$("#t_y").value;
+  if(!u||!$("#t_x").value||!$("#t_y").value) return toast("choose a unit and the village x,y (right-click or 'To nearest village')");
+  if(!huts.some(h=>h.x===x&&h.y===y)) return toast(`no village at (${x},${y})`);
+  const body = {unit_id:u.id, x, y, min_moves:+$("#h_moves").value||2, max_attempts:+$("#h_max").value||20};
+  if($("#h_then_on").checked && $("#h_tx").value && $("#h_ty").value) body.then=[+$("#h_tx").value, +$("#h_ty").value];
+  try{ const r = await api("/hunt", body); toast(r.ok ? `Village hunt started: ${u.type_name} → (${x},${y})` : "⚠ "+r.error); tasksAt=0; }catch(e){ toast(e.message); }
+};
+$("#c_go").onclick = async ()=>{
+  const body={target:+$("#c_target").value||10, min_moves:+$("#c_moves").value||2, max_turns:+$("#c_turns").value||40, goal:$("#c_goal").value};
+  if(body.goal==="city") body.max_attempts=40;
+  const what = body.goal==="city" ? `until ${body.target} cities exist (load if a village does not yield a city)` : `until ${body.target} units with ${body.min_moves}+ moves`;
+  if(!confirm(`Campaign: take villages ${what}. Other units are skipped and turns are ended automatically. Start?`)) return;
+  try{ const r=await api("/campaign", body); toast(r.ok?"Campaign started":"⚠ "+r.error); tasksAt=0; }catch(e){ toast(e.message); }
+};
+$("#c_cancel").onclick = ()=>api("/campaign/cancel",{}).then(()=>toast("Campaign stop requested"));
+$("#h_cancel").onclick = ()=>api("/hunt/cancel",{}).then(()=>toast("Stop requested"));
+$("#tasklist").addEventListener("click", e=>{ const b=e.target.closest("button[data-cancel]"); if(b) api("/tasks/cancel",{unit_id:+b.dataset.cancel}).then(()=>{tasksAt=0;}); });
+$("#runner_on").onchange = e=>api("/tasks/settings",{enabled:e.target.checked}).then(r=>toast(r.enabled?"Task runner on":"Paused"));
+$("#autocycle").onchange = e=>api("/tasks/settings",{auto_cycle:e.target.checked});
+
+// ---------------------------------------------------------------- actions
+async function run(label, path, body){
+  if(busy) return; busy=true; document.body.style.cursor="progress";
+  try{
+    const r = await api(path, body);
+    const evs = (r.events||[]).map(e=>e.kind).join(", ");
+    $("#last").textContent = `${label}\nok: ${r.ok}${r.keys?"  keys: "+r.keys.join(" "):""}${r.method?"  ("+r.method+")":""}\n${r.error?"⚠ "+r.error+"\n":""}${evs?"events: "+evs:"no events"}${r.note?"\n"+r.note:""}`;
+    if(r.ok===false) toast(r.error||"failed");
+  }catch(e){ $("#last").textContent = `${label}\n⚠ ${e.message}`; toast(e.message); }
+  finally{ busy=false; document.body.style.cursor=""; pollState(); }
+}
+function move(d){ const au=activeUnit(); return run(`move ${d}`, "/act", {action:"move", dir:d, unit_id: au?au.id:undefined}); }
+function cmd(name){
+  if(["disband","pillage","end_turn"].includes(name) && !confirm(`Do "${name}"?`)) return;
+  return run(name, "/act", {action:name});
+}
+document.querySelectorAll("#pad button[data-dir]").forEach(b=>b.onclick=()=>move(b.dataset.dir));
+document.querySelectorAll("[data-cmd]").forEach(b=>b.onclick=()=>cmd(b.dataset.cmd));
+$("#sendkey").onclick = ()=>{ const k=$("#rawkey").value.trim(); if(k) run(`key ${k}`, "/act", {action:"key", key:k}); };
+$("#rawkey").addEventListener("keydown", e=>{ if(e.key==="Enter") $("#sendkey").click(); });
+$("#pp_opts").addEventListener("click", e=>{ const b=e.target.closest("button[data-opt]"); if(b) run(`option ${b.dataset.opt}`, "/answer_dialog", {option:+b.dataset.opt, button:"ok"}); });
+$("#pp_btns").addEventListener("click", e=>{ const b=e.target.closest("button[data-btn]"); if(b) run(`button ${b.dataset.btn}`, "/answer_dialog", {button:b.dataset.btn}); });
+document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{ document.querySelectorAll(".tabs button").forEach(x=>x.classList.remove("sel")); b.classList.add("sel"); tab=b.dataset.tab; if(S) renderTab(); });
+$("#tabbody").addEventListener("click", e=>{ const tr=e.target.closest("tr[data-x]"); if(!tr) return; $("#follow").checked=false; view.cx=+tr.dataset.x; view.cy=+tr.dataset.y; loadTiles().then(drawMap); });
+$("#popbadge").onclick = ()=>{ const box=$("#popup"); box._hidden=null; box._ptr=null; if(S) renderPopup(); };
+$("#keymethod").onchange = e=>api("/keys",{method:e.target.value}).then(r=>toast("keys: "+r.key_method)).catch(err=>toast(err.message));
+document.addEventListener("keydown", e=>{
+  if(e.target.tagName==="INPUT"||e.target.tagName==="SELECT"||e.ctrlKey||e.altKey||e.metaKey||!S) return;
+  if(S.popup){
+    if(e.key==="Enter"){ e.preventDefault(); run("button ok","/answer_dialog",{button:"ok"}); }
+    else if(e.key==="Escape"){ e.preventDefault(); run("button cancel","/answer_dialog",{button:"cancel"}); }
+    else if(/^[0-9]$/.test(e.key) && (S.popup.options||[]).length){ e.preventDefault(); run(`option ${e.key}`,"/answer_dialog",{option:+e.key,button:"ok"}); }
+    return;
+  }
+  const dir = e.code && e.code.startsWith("Numpad") ? KEYDIR[e.code.slice(6)] : KEYDIR[e.key];
+  if(dir){ e.preventDefault(); return move(dir); }
+  const c = KEYCMD[e.key.toLowerCase()];
+  if(c){ e.preventDefault(); return cmd(c); }
+});
+
+api("/health").then(h=>{ $("#keymethod").value=h.key_method||"post"; window.CONSOLE_VERSION=h.console_version; }).catch(()=>{});
+// reload the page by itself when a new console.html has been installed
+setInterval(()=>api("/health").then(h=>{
+  if(window.CONSOLE_VERSION && h.console_version && h.console_version!==window.CONSOLE_VERSION) location.reload();
+}).catch(()=>{}), 15000);
+pollState(); setInterval(pollState, 1000); pollEvents();
+</script>
+</body>
+</html>
