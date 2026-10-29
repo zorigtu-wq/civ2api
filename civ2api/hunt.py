@@ -30,6 +30,8 @@ _ids = itertools.count(1)
 LIVE = ("starting", "approaching", "waiting_active", "waiting_next_turn", "saving", "trying", "loading")
 
 
+WANT = {"city": "a city", "tech": "a technology"}
+
 class HutHunt:
     def __init__(self, session, runner, saves_dir: str, unit_id: int, hut: tuple, min_moves: int = 2,
                  max_attempts: int = 20, then: tuple | None = None, auto_cycle: bool = True,
@@ -42,7 +44,8 @@ class HutHunt:
         self.then = tuple(then) if then else None
         self.auto_cycle = auto_cycle
         self.keep_last = keep_last            # out of attempts: keep the last outcome (village gone)
-        self.goal = goal                      # "unit": a new unit with >= min_moves; "city": a new city
+        self.goal = goal                      # "unit": a new unit with >= min_moves; "city": a new city;
+                                              # "tech": a new advance (villages too close to a city never give a city)
         self.status, self.message = "starting", ""
         self.attempts = 0
         self.outcomes: list[dict] = []
@@ -139,7 +142,7 @@ class HutHunt:
         # Civ2 gives units NEW ids when a game is loaded; the slot index is kept
         self.key = (u["index"], u["type"], u["owner"])
         self._ev("hunt_saved", path=self.save_path)
-        want = "a city" if self.goal == "city" else f"a unit with {self.min_moves}+ moves"
+        want = WANT.get(self.goal) or f"a unit with {self.min_moves}+ moves"
         J(self.s, "hunt", "save", f"village ({self.hut[0]},{self.hut[1]}) : restore point before entering; "
           f"if {want} does not appear, load this save and retry", save=os.path.basename(self.save_path))
         # ---- attempts
@@ -164,6 +167,7 @@ class HutHunt:
                 self.result = out
                 self.r.enabled = True
                 what = ", ".join(c["name"] for c in out["cities"]) if self.goal == "city" \
+                    else f"+{out['techs']} tech" if self.goal == "tech" \
                     else ", ".join(n["type"] for n in out["gained"])
                 msg = f"gained: {what} ({self.attempts} attempts)"
                 if self.then and out["unit_alive"]:
@@ -180,7 +184,7 @@ class HutHunt:
                 return self._set("kept", f"{self.attempts} attempts: goal not reached, kept the last result")
             if self.attempts >= self.max_attempts + (10 if self.keep_last else 0):
                 self._load()
-                want = "a city" if self.goal == "city" else f"a unit with {self.min_moves}+ moves"
+                want = WANT.get(self.goal) or f"a unit with {self.min_moves}+ moves"
                 return self._set("gave_up", f"no {want} in {self.attempts} attempts; "
                                             "restored the state before the village")
             if self._repeating():
@@ -294,7 +298,12 @@ class HutHunt:
         u2 = self._unit(st, grace=2.0)
         new_cities = [{"name": c["name"], "x": c["x"], "y": c["y"], "size": c["size"]}
                       for c in st["cities"] if c["owner"] == me and (c["x"], c["y"]) not in cities_before]
-        success = bool(new_cities) if self.goal == "city" else any(g["ok"] for g in gained)
+        if self.goal == "city":
+            success = bool(new_cities)
+        elif self.goal == "tech":
+            success = civ["techs"] > techs0
+        else:
+            success = any(g["ok"] for g in gained)
         return {"attempt": self.attempts, "success": success, "cities": new_cities,
                 "gained": [g for g in gained if g["ok"]], "new_units": gained,
                 "gold": civ["gold"] - gold0, "techs": civ["techs"] - techs0,

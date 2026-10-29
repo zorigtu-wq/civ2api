@@ -27,7 +27,7 @@ header h1{font-size:16px;margin:0;letter-spacing:.06em;color:var(--accent);font-
 main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:12px;padding:12px;height:calc(100% - 52px)}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
 .panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin:0;padding:8px 12px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:8px}
-.left{display:grid;grid-template-rows:minmax(0,1fr) 260px;gap:12px;min-height:0}
+.left{display:grid;grid-template-rows:minmax(0,1fr) 330px;gap:12px;min-height:0}
 #mapwrap{position:relative;flex:1;min-height:0}
 canvas{display:block;width:100%;height:100%}
 #tip{position:absolute;pointer-events:none;background:#000c;border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:12px var(--mono);display:none;white-space:pre}
@@ -44,7 +44,19 @@ canvas{display:block;width:100%;height:100%}
 .cmds button{font-size:12px;padding:6px 4px}
 .cmds button.warn{border-color:#6b3a2e}
 .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-.tabs{display:flex;gap:4px}
+.tabs{display:flex;gap:4px;flex-wrap:wrap}
+.chips button{padding:2px 8px;font-size:11px;border-radius:12px}
+.chips button.sel{border-color:var(--accent);color:var(--accent)}
+.lv-bad{color:var(--bad)} .lv-warn{color:#ffd36b} .lv-info{color:var(--info)}
+.charts{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;padding:8px}
+.chart{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.chart h4{margin:0 0 4px;font-size:12px;color:var(--dim);font-weight:500}
+.chart svg{width:100%;height:140px;display:block}
+.pane{padding:10px 12px}
+.pane h3{font-size:13px;margin:12px 0 6px;color:var(--accent);font-weight:600}
+.big{font-size:20px;font-weight:600}
+textarea{font:12px var(--mono);color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:6px 8px;width:100%}
+th[data-sort]{cursor:pointer} th[data-sort]:hover{color:var(--accent)}
 .tabs button{padding:3px 10px;font-size:12px;border-radius:5px}
 .tabs button.sel{border-color:var(--accent);color:var(--accent)}
 .scroll{overflow:auto;flex:1;min-height:0}
@@ -85,6 +97,7 @@ kbd{font:11px var(--mono);border:1px solid var(--line);border-radius:3px;padding
   <span class="stat">Gov <b id="gov">–</b></span>
   <span class="stat">Research <b id="res">–</b></span>
   <span class="stat">Village <b id="hutcount">–</b></span>
+  <button id="alertbadge" style="padding:3px 10px" title="Alerts">⚠ <span id="alertcount">–</span></button>
   <button id="popbadge" style="display:none;border-color:var(--accent);color:var(--accent);padding:3px 10px">● Popup open</button>
   <span class="stat" style="margin-left:auto">keys
     <select id="keymethod" title="post = works even when the game is in the background">
@@ -114,12 +127,31 @@ kbd{font:11px var(--mono);border:1px solid var(--line);border-radius:3px;padding
     <div class="panel">
       <h2><span class="tabs">
         <button data-tab="units" class="sel">My units</button>
-        <button data-tab="cities">Cities</button>
-        <button data-tab="civs">Civs</button>
+        <button data-tab="cities">My cities</button>
+        <button data-tab="alerts">Alerts</button>
+        <button data-tab="charts">Charts</button>
+        <button data-tab="gov">Government</button>
+        <button data-tab="research">Research</button>
+        <button data-tab="civs">Rivals</button>
+        <button data-tab="saves">Save</button>
         <button data-tab="huts">Village</button>
         <button data-tab="log">Event log</button>
         <button data-tab="proto">Decisions</button>
+        <button data-tab="reports">Turn reports</button>
+        <button data-tab="goals">Goals</button>
       </span><span class="muted" id="tabinfo"></span></h2>
+      <div id="goalform" class="row" style="display:none;padding:6px 0">
+        <select id="g_type">
+          <option value="cities">Cities ≥</option><option value="gold">Gold ≥</option>
+          <option value="wonder">Build wonder</option><option value="tech">Discover tech</option>
+          <option value="government">Government</option><option value="no_disorder">Disorder 0</option>
+          <option value="no_starving">Starving 0</option><option value="villages">Villages left ≤</option>
+        </select>
+        <input id="g_target" placeholder="target (number / name)" style="width:170px">
+        <input id="g_by" type="number" placeholder="by turn" style="width:100px">
+        <input id="g_note" placeholder="note" style="width:160px">
+        <button id="g_add">Add</button>
+      </div>
       <div class="scroll" id="tabbody"></div>
     </div>
   </section>
@@ -267,6 +299,16 @@ async function pollState(){
     $("#conn").textContent = e.status===503 ? "Civ2 is not running (start it with the launcher)" : "error: "+e.message;
   }
 }
+let reports = [], goals = [];
+async function pollGoalsOnce(){ try{ goals = await api("/goals"); if(tab==="goals") renderTab(); }catch(e){} }
+async function pollReports(){
+  for(;;){
+    try{ reports = await api("/reports"); if(tab==="reports") renderTab(); }catch(e){}
+    await pollGoalsOnce();
+    await new Promise(r=>setTimeout(r,10000));
+  }
+}
+pollReports();
 let proto = [], protoSeq = 0;
 async function pollProtocol(){
   for(;;){
@@ -315,28 +357,41 @@ function renderActive(){
 }
 function renderTab(){
   const body = $("#tabbody");
+  if(body._tab!==tab){ body._tab=tab; body._html=null; }
   if(tab==="units"){
     const us = S.units.filter(u=>u.owner===me());
     $("#tabinfo").textContent = `${us.length} / ${S.units.length} total`;
     body.innerHTML = `<table><thead><tr><th>#</th><th>Type</th><th>x,y</th><th>HP</th><th>Moves</th><th>Orders</th><th>Vet</th></tr></thead><tbody>${
       us.map(u=>`<tr class="${u.index===S.active_unit?"act":""}" data-x="${u.x}" data-y="${u.y}"><td>${u.id}</td><td>${esc(u.type_name)}</td><td>${u.x},${u.y}</td><td>${u.hp}/${u.hp_max}</td><td>${u.moves_left}</td><td>${esc(u.orders||"")}</td><td>${u.veteran?"V":""}</td></tr>`).join("")
     }</tbody></table>`;
-  }else if(tab==="cities"){
-    $("#tabinfo").textContent = `${S.cities.length} cities`;
-    body.innerHTML = `<table><thead><tr><th>Name</th><th>Owner</th><th>x,y</th><th>Size</th><th>Production</th><th>Shields</th><th>Status</th></tr></thead><tbody>${
-      S.cities.map(c=>`<tr class="${c.owner===me()?"act":""}" data-x="${c.x}" data-y="${c.y}"><td>${esc(c.name)}</td><td>${esc(civName(c.owner))}</td><td>${c.x},${c.y}</td><td>${c.size}</td><td>${esc(c.producing.name)}</td><td>${c.shields}</td><td>${c.disorder?"⚠ disorder":c.wltkd?"WLTKD":""}</td></tr>`).join("")
-    }</tbody></table>`;
-  }else if(tab==="civs"){
-    $("#tabinfo").textContent = "";
-    body.innerHTML = `<table><thead><tr><th>#</th><th>Civ</th><th>Alive</th><th>Gold</th><th>Gov</th><th>Research</th><th>Techs</th><th>Units</th><th>Cities</th></tr></thead><tbody>${
-      S.civs.map(c=>`<tr class="${c.id===me()?"act":""}"><td><span style="color:${CIVCOL[c.id]}">■</span> ${c.id}</td><td>${esc(c.name)}</td><td>${c.alive?"✓":"✗"}</td><td>${c.gold}</td><td>${esc(c.government)}</td><td>${esc(c.researching||"")}</td><td>${c.techs}</td><td>${S.units.filter(u=>u.owner===c.id).length}</td><td>${S.cities.filter(x=>x.owner===c.id).length}</td></tr>`).join("")
-    }</tbody></table>`;
+  }else if(tab==="cities"){ renderCities(body);
+  }else if(tab==="civs"){ renderRivals(body);
+  }else if(tab==="alerts"){ renderAlerts(body);
+  }else if(tab==="charts"){ renderCharts(body);
+  }else if(tab==="gov"){ renderGov(body);
+  }else if(tab==="research"){ renderResearch(body);
+  }else if(tab==="saves"){ renderSaves(body);
   }else if(tab==="huts"){
     const known = huts.filter(h=>h.explored_by_me).length;
     $("#tabinfo").textContent = `${huts.length} villages · ${known} in explored land`;
     body.innerHTML = `<table><thead><tr><th>x,y</th><th>Terrain</th><th>Distance (from active unit)</th><th>Explored</th></tr></thead><tbody>${
       huts.map(h=>`<tr data-x="${h.x}" data-y="${h.y}" class="${h.explored_by_me?"act":""}"><td>${h.x},${h.y}</td><td>${esc(h.terrain)}${h.river?" + river":""}</td><td>${h.distance ?? "–"}</td><td>${h.explored_by_me?"✓":""}</td></tr>`).join("")
     }</tbody></table>`;
+  }else if(tab==="reports"){
+    $("#tabinfo").textContent = `${reports.length} turns · logs/turn_reports.jsonl`;
+    body.innerHTML = `<table><thead><tr><th>Turn</th><th>Gold</th><th>±</th><th>Tax/Lux/Sci</th><th>Cities</th><th>Unhappy&gt;happy</th><th>Disorder</th><th>Starving</th><th>Entertainer</th><th>Money</th><th>Goals</th></tr></thead><tbody>${
+      reports.slice().reverse().map(r=>`<tr><td>${r.turn}</td><td>${r.gold}</td><td style="color:${(r.gold_change||0)<0?"#ff6b6b":"#7cd67c"}">${r.gold_change??""}</td><td>${(r.rates||[]).map(x=>x*10).join("/")}</td><td>${r.cities}</td><td>${r.unhappy_gt_happy}</td><td style="color:${r.disorder?"#ff6b6b":""}">${r.disorder}</td><td style="color:${r.starving?"#ffd36b":""}">${r.starving}</td><td>${r.entertainers}</td><td>${esc(r.money_action||"")}</td><td style="white-space:normal">${(r.goals||[]).map(g=>`${esc(g.type)} ${esc(g.target??"")}: ${esc(g.status)}`).join("<br>")}</td></tr>`).join("")
+    }</tbody></table>`;
+  }else if(tab==="goals"){
+    const done = goals.filter(g=>g.done).length;
+    $("#tabinfo").textContent = `${goals.length} goals · ${done} done`;
+    body.innerHTML = `<table><thead><tr><th>#</th><th>Type</th><th>Target</th><th>Now</th><th>Progress</th><th>Deadline</th><th>Status</th><th></th></tr></thead><tbody>${
+      goals.map(g=>`<tr><td>${g.id}</td><td>${esc(g.type)}</td><td>${esc(g.target??"")}${g.note?`<div class="muted">${esc(g.note)}</div>`:""}</td><td>${esc(g.current??"")}</td>
+        <td><div style="width:120px;height:8px;background:#2b261f;border-radius:4px"><div style="width:${Math.round(100*g.progress)}%;height:8px;background:${g.done?"#7cd67c":"#d9a441"};border-radius:4px"></div></div></td>
+        <td>${g.by_turn?("turn "+g.by_turn):"—"}</td><td style="color:${g.done?"#7cd67c":g.status.startsWith("overdue")?"#ff6b6b":"#ffd36b"}">${esc(g.status)}</td>
+        <td><button data-del="${g.id}">✕</button></td></tr>`).join("")
+    }</tbody></table>`;
+    body.querySelectorAll("button[data-del]").forEach(b=>b.onclick=()=>api("/goals/delete",{id:+b.dataset.del}).then(pollGoalsOnce));
   }else if(tab==="proto"){
     $("#tabinfo").textContent = `${proto.length} decisions · logs/decisions.jsonl`;
     const AC = {runner:"#ffd36b", campaign:"#d9a441", hunt:"#5fa8ff", city:"#7cd67c", research:"#c58cff", save:"#999"};
@@ -348,6 +403,171 @@ function renderTab(){
     body.innerHTML = `<div id="log">${logItems.slice().reverse().map(fmtEvent).join("")}</div>`;
   }
 }
+
+// ---------------------------------------------------------------- panels
+let P = {alerts:null, rivals:null, gov:null, research:null, saves:null}, cityFilter="all", citySort={k:"name",d:1}, saveKind="all";
+function setBody(body, html){
+  const ae=document.activeElement;
+  if(ae && body.contains(ae) && ["INPUT","SELECT","TEXTAREA"].includes(ae.tagName)) return;   // do not reset what is being typed
+  if(body._html===html) return; body._html=html; body.innerHTML=html;
+}
+async function pollPanel(path, key){ key=key||path; try{ P[key] = await api("/"+path); }catch(e){ P[key] = {error:e.message}; } }
+const TABPANEL={civs:["rivals","rivals"], gov:["government","gov"], research:["research","research"], saves:["saves","saves"]};
+async function pollPanels(){
+  for(;;){
+    await pollPanel("alerts");
+    const a=P.alerts; if(a && a.counts){ const n=a.counts.bad+a.counts.warn; $("#alertcount").textContent = `${a.counts.bad}/${a.counts.warn}`;
+      $("#alertbadge").style.borderColor = a.counts.bad ? "var(--bad)" : a.counts.warn ? "#ffd36b" : "var(--line)";
+      $("#alertbadge").style.color = a.counts.bad ? "var(--bad)" : a.counts.warn ? "#ffd36b" : "var(--ink)"; }
+    if(TABPANEL[tab]) await pollPanel(...TABPANEL[tab]);
+    if(S) renderTab();
+    await new Promise(r=>setTimeout(r,4000));
+  }
+}
+const sum=(a,f)=>a.reduce((m,x)=>m+f(x),0);
+function myCities(){ return S.cities.filter(c=>c.owner===me()); }
+const CF = {
+  all:["All",c=>true], riot:["Unhappy>happy",c=>c.unhappy>c.happy], disorder:["Disorder",c=>c.disorder],
+  starving:["Starving",c=>c.food_surplus_raw<2*c.size], wonder:["Wonder",c=>c.producing.kind==="improvement"&&c.producing.id>=39],
+  notemple:["No Temple",c=>!(c.improvement_names||[]).includes("Temple")], caravan:["Building Caravan",c=>c.producing.name==="Caravan"],
+  big:["Size ≥5",c=>c.size>=5]
+};
+function renderCities(body){
+  const all=myCities(), cs=all.filter(CF[cityFilter][1]);
+  const key={name:c=>c.name,size:c=>c.size,food:c=>c.food_surplus_raw-2*c.size,shields:c=>c.shield_total,happy:c=>c.happy,unhappy:c=>c.unhappy,ent:c=>c.entertainers,prod:c=>c.producing.name,prog:c=>c.shields};
+  const f=key[citySort.k]||key.name; cs.sort((a,b)=>{const x=f(a),y=f(b); return (x>y?1:x<y?-1:0)*citySort.d;});
+  $("#tabinfo").textContent = `${cs.length} / ${all.length} cities · population ${sum(all,c=>c.size)} · click a row to jump to it on the map`;
+  const th=(k,t)=>`<th data-sort="${k}">${t}${citySort.k===k?(citySort.d>0?" ▲":" ▼"):""}</th>`;
+  setBody(body, `<div class="row chips" style="padding:6px 8px">${Object.entries(CF).map(([k,[t,fn]])=>`<button data-cf="${k}" class="${k===cityFilter?"sel":""}">${t} ${all.filter(fn).length}</button>`).join("")}</div>
+  <table><thead><tr>${th("name","Name")}${th("size","Size")}${th("food","Food ±")}${th("shields","Shields/turn")}${th("happy","Happy")}${th("unhappy","Unhappy")}${th("ent","Ent")}${th("prod","Production")}${th("prog","Shields")}<th>Buildings</th><th>Status</th></tr></thead><tbody>${
+    cs.map(c=>{ const fd=c.food_surplus_raw-2*c.size; return `<tr data-x="${c.x}" data-y="${c.y}"><td>${esc(c.name)}</td><td>${c.size}</td><td style="color:${fd<0?"var(--bad)":fd===0?"var(--dim)":"var(--good)"}">${fd>0?"+":""}${fd}</td><td>${c.shield_total}</td><td>${c.happy}</td><td style="color:${c.unhappy>c.happy?"var(--bad)":""}">${c.unhappy}</td><td>${c.entertainers||""}</td><td>${esc(c.producing.name)}</td><td>${c.shields}</td><td class="muted" title="${esc((c.improvement_names||[]).join(", "))}">${(c.improvement_names||[]).length}</td><td>${c.disorder?'<span class="lv-bad">⚠ disorder</span>':c.wltkd?'<span class="lv-good" style="color:var(--good)">WLTKD</span>':c.unhappy>c.happy?'<span class="lv-warn">riot next turn</span>':""}</td></tr>`;}).join("")
+  }</tbody></table>`);
+}
+function renderAlerts(body){
+  const a=P.alerts; if(!a||a.error){ setBody(body,`<div class="pane muted">${esc(a&&a.error||"loading…")}</div>`); return; }
+  $("#tabinfo").textContent = `turn ${a.turn} · ${a.counts.bad} serious · ${a.counts.warn} warnings · ${a.counts.info} info`;
+  const L={bad:"●",warn:"▲",info:"·"}, K={enemy_near:"Enemy near",disorder:"Disorder",riot_next:"Riot next",starving:"Starving",wonder_race:"Wonder race",wonder_lost:"Wonder lost",gold_low:"Gold",anarchy:"Anarchy",job:"Job",popup:"Popup"};
+  setBody(body, a.alerts.length ? `<table><thead><tr><th></th><th>Type</th><th>What is happening</th><th>x,y</th></tr></thead><tbody>${
+    a.alerts.map(x=>`<tr ${x.x!=null?`data-x="${x.x}" data-y="${x.y}"`:""}><td class="lv-${x.level}">${L[x.level]||""}</td><td class="lv-${x.level}">${esc(K[x.kind]||x.kind)}</td><td style="white-space:normal">${esc(x.text)}</td><td class="muted">${x.x!=null?x.x+","+x.y:""}</td></tr>`).join("")}</tbody></table>`
+    : `<div class="pane" style="color:var(--good)">No alerts ✓</div>`);
+}
+function lineChart(title, series, fmt){
+  const pts=series.flatMap(s=>s.pts); if(pts.length<2) return `<div class="chart"><h4>${esc(title)}</h4><div class="muted" style="height:140px;padding-top:50px;text-align:center">not enough data yet (turn reports accumulate)</div></div>`;
+  const W=300,H=140,l=34,r=6,t=6,b=18;
+  const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]); let x0=Math.min(...xs), x1=Math.max(...xs), y0=Math.min(0,...ys), y1=Math.max(...ys); if(x1===x0) x1=x0+1; if(y1===y0) y1=y0+1;
+  const X=v=>l+(v-x0)/(x1-x0)*(W-l-r), Y=v=>H-b-(v-y0)/(y1-y0)*(H-t-b);
+  const grid=[0,.5,1].map(f=>{const v=y0+f*(y1-y0); return `<line x1="${l}" x2="${W-r}" y1="${Y(v)}" y2="${Y(v)}" stroke="#3a332a" stroke-width="1"/><text x="${l-4}" y="${Y(v)+3}" fill="#a39886" font-size="9" text-anchor="end">${Math.round(v)}</text>`;}).join("");
+  const xl=`<text x="${l}" y="${H-4}" fill="#a39886" font-size="9">t${x0}</text><text x="${W-r}" y="${H-4}" fill="#a39886" font-size="9" text-anchor="end">t${x1}</text>`;
+  const lines=series.map(s=>s.pts.length?`<polyline fill="none" stroke="${s.color}" stroke-width="${s.w||1.6}" points="${s.pts.map(p=>X(p[0]).toFixed(1)+","+Y(p[1]).toFixed(1)).join(" ")}"/>`:"").join("");
+  const leg=series.length>1?`<div class="legend">${series.map(s=>`<span><i style="background:${s.color}"></i>${esc(s.name)} ${s.pts.length?s.pts[s.pts.length-1][1]:""}</span>`).join("")}</div>`:"";
+  const last=series[0].pts[series[0].pts.length-1];
+  return `<div class="chart"><h4>${esc(title)} <b style="color:var(--ink)">${last?last[1]:""}</b></h4><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${grid}${xl}${lines}</svg>${leg}</div>`;
+}
+function renderCharts(body){
+  const R=reports; $("#tabinfo").textContent = `from ${R.length} turn reports`;
+  const ser=(f,name,color,w)=>({name,color,w,pts:R.filter(r=>f(r)!=null).map(r=>[r.turn,f(r)])});
+  const rivIds=[...new Set(R.flatMap(r=>Object.keys(r.rivals||{})))];
+  const rivName=id=>{ for(const r of R) if(r.rivals&&r.rivals[id]) return r.rivals[id].name; return "#"+id; };
+  const riv=(k)=>rivIds.map(id=>({name:rivName(id),color:CIVCOL[+id]||"#888",w:1,pts:R.filter(r=>r.rivals&&r.rivals[id]).map(r=>[r.turn,r.rivals[id][k]])}));
+  setBody(body, `<div class="charts">${[
+    lineChart("Cities",[ser(r=>r.cities,"Us","#d9a441",2.4),...riv("cities")]),
+    lineChart("Gold",[ser(r=>r.gold,"Gold","#d9a441",2)]),
+    lineChart("Techs",[ser(r=>r.techs,"Us","#c58cff",2.4),...riv("techs")]),
+    lineChart("Population (sum of sizes)",[ser(r=>r.population,"Population","#8fbf6a",2)]),
+    lineChart("Rates (%)",[ser(r=>r.rates&&r.rates[0]*10,"Tax","#d9a441"),ser(r=>r.rates&&r.rates[1]*10,"Lux","#8fbf6a"),ser(r=>r.rates&&r.rates[2]*10,"Sci","#7aa7d9")]),
+    lineChart("Problem cities",[ser(r=>r.unhappy_gt_happy,"Unhappy>happy","#ffd36b"),ser(r=>r.disorder,"Disorder","#d9634a"),ser(r=>r.starving,"Starving","#e67e22")]),
+  ].join("")}</div>`);
+}
+function renderGov(body){
+  const g=P.gov; if(!g||g.error){ setBody(body,`<div class="pane muted">${esc(g&&g.error||"loading…")}</div>`); return; }
+  $("#tabinfo").textContent = `turn ${g.turn}`;
+  const r=g.rates, pol=g.rate_policy||{};
+  const govs=["Despotism","Monarchy","Communism","Fundamentalism","Republic","Democracy"];
+  setBody(body, `<div class="pane">
+    <div class="row"><span class="big">${esc(g.government)}</span><span class="muted">max rate ${g.max_rate*10}%${g.revolution_turn!=null?` · revolution on turn ${g.revolution_turn} (${g.turn-g.revolution_turn} turns ago)`:""}</span></div>
+    <h3>Tax · Lux · Sci</h3>
+    <div class="row">Now: <b>${r.tax*10}% · ${r.lux*10}% · ${r.sci*10}%</b>
+      <span class="muted" style="margin-left:12px">new:</span>
+      <input id="gv_tax" type="number" min="0" max="10" value="${r.tax}" style="width:56px">
+      <input id="gv_lux" type="number" min="0" max="10" value="${r.lux}" style="width:56px">
+      <input id="gv_sci" type="number" min="0" max="10" value="${r.sci}" style="width:56px">
+      <span class="muted">(×10%, sum 10)</span><button id="gv_rates">Set</button></div>
+    <div class="muted" style="margin-top:4px">Automatic money rule: ${esc(g.money_rule)}</div>
+    <h3>Rates to set when the government changes</h3>
+    <div class="row">${Object.entries(pol).map(([k,v])=>`<span>${esc(k)}: <b>${v.map(x=>x*10).join("/")}</b></span>`).join(" · ")||'<span class="muted">none</span>'}
+      <select id="gv_pgov">${govs.map(x=>`<option ${x==="Democracy"?"selected":""}>${x}</option>`).join("")}</select>
+      <input id="gv_ptax" type="number" value="4" style="width:50px"><input id="gv_plux" type="number" value="4" style="width:50px"><input id="gv_psci" type="number" value="2" style="width:50px">
+      <button id="gv_pol">Save</button></div>
+    <h3>Next government (chosen after Anarchy)</h3>
+    <div class="row">Plan: <b>${esc((g.plan||[]).join(" → ")||"—")}</b>
+      <select id="gv_plan">${govs.map(x=>`<option ${(g.plan||[])[0]===x?"selected":""}>${x}</option>`).join("")}</select><button id="gv_setplan">Set</button>
+      <button id="gv_rev" class="warn" style="margin-left:auto;border-color:var(--bad)">Revolution</button></div>
+  </div>`);
+}
+function renderResearch(body){
+  const R=P.research; if(!R||R.error){ setBody(body,`<div class="pane muted">${esc(R&&R.error||"loading…")}</div>`); return; }
+  $("#tabinfo").textContent = `${R.techs} techs · Sci ${R.science_rate*10}%`;
+  const col=st=>st==="known"?"var(--dim)":st==="researching"?"var(--accent)":st==="available"?"var(--good)":"#ffd36b";
+  setBody(body, `<div class="pane" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px">
+   <div>
+    <div class="row"><span class="big">${esc(R.researching||"—")}</span><span class="muted">${R.beakers} beaker${R.beakers_per_turn!=null?` · +${R.beakers_per_turn}/turn`:""}</span></div>
+    <h3>Research queue</h3>
+    <table><tbody>${R.plan.map((p,i)=>[p,i]).filter(([p])=>p.status!=="known").map(([p,i])=>`<tr><td class="muted">${i+1}</td><td>${esc(p.name)}</td><td style="color:${col(p.status)}">${esc(p.status)}</td></tr>`).join("")||'<tr><td class="muted">Nothing left to research in the queue — add some from the right</td></tr>'}</tbody></table>
+    <div class="muted" style="margin-top:4px">${R.plan.filter(p=>p.status==="known").length} already known</div>
+   </div>
+   <div>
+    <h3 style="margin-top:0">Edit the queue (one per line)</h3>
+    <textarea id="rs_plan" rows="9">${esc(R.plan.map(p=>p.name).join("\n"))}</textarea>
+    <div class="row" style="margin-top:6px"><button id="rs_save">Save</button><span class="muted">click a name below to append it</span></div>
+    <h3>Available now (${R.available.length})</h3>
+    <div class="row chips">${R.available.map(n=>`<button data-addtech="${esc(n)}">${esc(n)}</button>`).join("")}</div>
+    <details style="margin-top:8px"><summary class="muted">Known ${R.known.length}</summary><div class="muted" style="font-size:12px">${esc(R.known.join(", "))}</div></details>
+   </div></div>`);
+}
+function renderRivals(body){
+  const R=P.rivals; if(!R||R.error){ setBody(body,`<div class="pane muted">${esc(R&&R.error||"loading…")}</div>`); return; }
+  $("#tabinfo").textContent = `${R.civs.length} civs alive`;
+  setBody(body, `<table><thead><tr><th>Civ</th><th>Gov</th><th>Cities</th><th>Population</th><th>Largest city</th><th>Tech</th><th>Research</th><th>Gold</th><th>Army</th><th>Units</th><th>Wonders built</th><th>Wonders in progress</th></tr></thead><tbody>${
+    R.civs.filter(c=>c.id!==0||c.units).map(c=>`<tr class="${c.me?"act":""}"><td><span style="color:${CIVCOL[c.id]}">■</span> ${esc(c.name)}</td><td>${esc(c.government)}</td><td>${c.cities}</td><td>${c.population}</td><td>${c.largest}</td><td>${c.techs}</td><td>${esc(c.researching||"")}</td><td>${c.gold}</td><td>${c.army}</td><td>${c.units}</td><td style="white-space:normal">${esc(c.wonders_built.join(", "))}</td><td style="white-space:normal">${c.wonders_building.map(w=>`${esc(w.wonder)} <span class="muted">${esc(w.city)} ${w.shields}/${w.cost||"?"}</span>`).join("<br>")}</td></tr>`).join("")
+  }</tbody></table>`);
+}
+function renderSaves(body){
+  const R=P.saves; if(!R||R.error){ setBody(body,`<div class="pane muted">${esc(R&&R.error||"loading…")}</div>`); return; }
+  $("#tabinfo").textContent = `${R.count} save · ${R.total_mb} MB · civ2api/saves`;
+  const kinds={all:"All",start:"Turn start",end:"Turn end",hunt:"Village",other:"Other"};
+  const ss=R.saves.filter(x=>saveKind==="all"||x.kind===saveKind);
+  setBody(body, `<div class="row chips" style="padding:6px 8px">${Object.entries(kinds).map(([k,t])=>`<button data-sk="${k}" class="${k===saveKind?"sel":""}">${t}</button>`).join("")}
+    <span class="muted" style="margin-left:8px">Rolling back stops the village hunt and campaign, loads the save, then restarts the campaign</span></div>
+    <table><thead><tr><th>Turn</th><th>Type</th><th>File</th><th>When</th><th>KB</th><th></th></tr></thead><tbody>${
+    ss.map(x=>`<tr><td>${x.turn??""}</td><td>${esc(kinds[x.kind]||x.kind)}</td><td>${esc(x.name)}</td><td class="muted">${x.time}</td><td class="muted">${Math.round(x.size/1024)}</td><td><button data-load="${esc(x.name)}" style="padding:1px 8px;font-size:11px">Roll back</button></td></tr>`).join("")
+  }</tbody></table>`);
+}
+$("#tabbody").addEventListener("click", async e=>{
+  const t=e.target;
+  if(t.dataset.cf){ cityFilter=t.dataset.cf; return renderTab(); }
+  if(t.dataset.sort){ citySort = {k:t.dataset.sort, d: citySort.k===t.dataset.sort ? -citySort.d : 1}; return renderTab(); }
+  if(t.dataset.sk){ saveKind=t.dataset.sk; return renderTab(); }
+  if(t.dataset.addtech){ const ta=$("#rs_plan"); ta.value = ta.value.trimEnd()+"\n"+t.dataset.addtech; ta.focus(); return; }
+  if(t.dataset.load){
+    if(!confirm(`Load ${t.dataset.load} and roll back? Unsaved progress in the current turn will be lost.`)) return;
+    toast("Rolling back…");
+    try{ const r=await api("/rollback",{name:t.dataset.load}); toast(r.ok?`Rolled back to turn ${r.turn}${r.campaign_restarted?" · campaign restarted":""}`:"⚠ "+(r.error||r.load&&r.load.error)); }catch(err){ toast(err.message); }
+    return;
+  }
+  const id=t.id;
+  try{
+    if(id==="gv_rates"){ const b={tax:+$("#gv_tax").value,lux:+$("#gv_lux").value,sci:+$("#gv_sci").value}; if(b.tax+b.lux+b.sci!==10) return toast("must add up to 10");
+      const r=await api("/tax_rates",b); toast(r.ok?"Rates set":"⚠ "+r.error); }
+    if(id==="gv_pol"){ const v=[+$("#gv_ptax").value,+$("#gv_plux").value,+$("#gv_psci").value]; if(v[0]+v[1]+v[2]!==10) return toast("must add up to 10");
+      const pol=Object.assign({}, (P.gov&&P.gov.rate_policy)||{}, {[$("#gv_pgov").value]:v}); const r=await api("/gov_rates",{policy:pol}); toast(r.ok?"Policy saved":"⚠ "+r.error); }
+    if(id==="gv_setplan"){ const r=await api("/government_plan",{governments:[$("#gv_plan").value]}); toast(r.ok?"Plan: "+r.government_plan.join(", "):"⚠ "+r.error); }
+    if(id==="gv_rev"){ if(!confirm(`Start a revolution? The civ goes into Anarchy, then ${(P.gov.plan||[]).join(", ")} is chosen.`)) return; const r=await api("/revolution",{}); toast(r.ok?"Revolution: "+r.government:"⚠ "+r.error); }
+    if(id==="rs_save"){ const techs=$("#rs_plan").value.split("\n").map(x=>x.trim()).filter(Boolean); const r=await api("/research_plan",{techs}); $("#rs_plan").blur(); toast(r.ok?`Queue saved (${r.research_plan.length})`:"⚠ "+r.error); }
+    if(id.startsWith("gv_")||id==="rs_save"){ document.activeElement&&document.activeElement.blur(); if(TABPANEL[tab]) await pollPanel(...TABPANEL[tab]); renderTab(); }
+  }catch(err){ toast(err.message); }
+});
+$("#alertbadge").onclick = ()=>document.querySelector('.tabs button[data-tab="alerts"]').click();
+pollPanels();
 function civName(id){ const c=(S.civs||[]).find(c=>c.id===id); return c ? c.name : `#${id}`; }
 
 function renderPopup(){
@@ -516,7 +736,8 @@ function renderTasks(){
     + (h.outcomes||[]).slice(-5).reverse().map(o=>`<div class="muted">#${o.attempt}: ${o.success?"✓":"✗"} ${o.new_units.map(n=>n.type+" "+n.moves+"mv").join(", ")||"no unit"}${o.gold?" · gold "+(o.gold>0?"+":"")+o.gold:""}${o.techs?" · tech +"+o.techs:""}${o.barbarians.length?" · barbarians "+o.barbarians.length:""}${o.unit_alive?"":" · unit died"}</div>`).join("") : "";
   if(h && h.live) $("#huntbox").open = true;
   if(camp && camp.status !== "none"){
-    $("#c_status").innerHTML = `<b>${esc(camp.status)}</b> · ${camp.have}/${camp.target} · turn ${camp.turn}<div class="muted">${esc(camp.message||"")}</div>`
+    $("#c_status").innerHTML = `<b>${esc(camp.status)}</b> · ${camp.have}/${camp.target} · turn ${camp.turn}${camp.explored?` · map explored <b>${camp.explored.pct}%</b>`:""}${(camp.techs_gained||[]).length?` · village tech ${camp.techs_gained.length}`:""}<div class="muted">${esc(camp.message||"")}</div>`
+      + Object.entries(camp.exploring||{}).map(([id,xy])=>`<div class="muted">🔦 #${id} → (${xy})</div>`).join("")
       + (camp.hunters||[]).map(x=>`<div class="muted">${esc(x.unit)} #${x.id} (${x.x},${x.y}) → ${x.village?"village ("+x.village+")":"—"}</div>`).join("")
       + (camp.gained||[]).slice(-6).map(g=>`<div style="color:var(--good)">✓ ${esc(g.unit)} @${g.village} (${g.attempts})</div>`).join("");
     if(camp.live) $("#campbox").open = true;
@@ -600,7 +821,13 @@ $("#sendkey").onclick = ()=>{ const k=$("#rawkey").value.trim(); if(k) run(`key 
 $("#rawkey").addEventListener("keydown", e=>{ if(e.key==="Enter") $("#sendkey").click(); });
 $("#pp_opts").addEventListener("click", e=>{ const b=e.target.closest("button[data-opt]"); if(b) run(`option ${b.dataset.opt}`, "/answer_dialog", {option:+b.dataset.opt, button:"ok"}); });
 $("#pp_btns").addEventListener("click", e=>{ const b=e.target.closest("button[data-btn]"); if(b) run(`button ${b.dataset.btn}`, "/answer_dialog", {button:b.dataset.btn}); });
-document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{ document.querySelectorAll(".tabs button").forEach(x=>x.classList.remove("sel")); b.classList.add("sel"); tab=b.dataset.tab; if(S) renderTab(); });
+document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{ document.querySelectorAll(".tabs button").forEach(x=>x.classList.remove("sel")); b.classList.add("sel"); tab=b.dataset.tab; $("#goalform").style.display = tab==="goals" ? "flex" : "none"; if(S) renderTab();
+  if(TABPANEL[tab]) pollPanel(...TABPANEL[tab]).then(()=>S&&renderTab()); });
+$("#g_add").onclick = async ()=>{
+  const body = {type:$("#g_type").value, target:$("#g_target").value, by_turn:$("#g_by").value, note:$("#g_note").value};
+  if(["cities","gold","villages"].includes(body.type)) body.target = +body.target;
+  try{ const r = await api("/goals", body); toast(r.ok?"Goal added":"⚠ "+r.error); $("#g_target").value=""; $("#g_note").value=""; pollGoalsOnce(); }catch(e){ toast(e.message); }
+};
 $("#tabbody").addEventListener("click", e=>{ const tr=e.target.closest("tr[data-x]"); if(!tr) return; $("#follow").checked=false; view.cx=+tr.dataset.x; view.cy=+tr.dataset.y; loadTiles().then(drawMap); });
 $("#popbadge").onclick = ()=>{ const box=$("#popup"); box._hidden=null; box._ptr=null; if(S) renderPopup(); };
 $("#keymethod").onchange = e=>api("/keys",{method:e.target.value}).then(r=>toast("keys: "+r.key_method)).catch(err=>toast(err.message));

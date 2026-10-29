@@ -74,7 +74,14 @@ class Rules:
             if in_civ and ";" in raw and raw.split(";", 1)[0].strip():
                 codes.append(raw.split(";", 1)[1].strip().split()[0] if raw.split(";", 1)[1].strip() else "")
         r.advance_codes = codes[:len(adv)]
+        r.advance_prereq = [tuple((_fields(l) + [""] * 5)[3:5]) for l in s.get("CIVILIZE", [])]
         r.improve_prereq = [(_fields(l) + ["", "", "", ""])[3] for l in s.get("IMPROVE", [])]
+        r.improve_cost = []          # shields (RULES.TXT gives tens of shields)
+        for l in s.get("IMPROVE", []):
+            try:
+                r.improve_cost.append(int(_fields(l)[1]) * 10)
+            except (IndexError, ValueError):
+                r.improve_cost.append(0)
         r.unit_prereq = [(_fields(l) + [""] * 14)[12] for l in s.get("UNITS", [])]
         r.unit_until = [(_fields(l) + ["", ""])[1] for l in s.get("UNITS", [])]
         r.terrain_lines = s.get("TERRAIN", [])

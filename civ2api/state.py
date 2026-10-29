@@ -478,7 +478,7 @@ class Civ2:
             except OSError:
                 return None
 
-    def _listbox(self, d: bytes, limit: int = 128) -> list[dict]:
+    def _listbox(self, d: bytes, limit: int = 400) -> list[dict]:
         """Rows of a list-box popup: [{"index", "text", "name", "value", "selected"}]."""
         ptr, sel = _u32(d, M.D_LISTBOX_FIRST), _u32(d, M.D_LISTBOX_SELECTED)
         out, seen = [], set()

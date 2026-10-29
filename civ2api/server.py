@@ -35,8 +35,17 @@ GET  /protocol?since=0         decision protocol: every action with the reason i
 POST /tax_rates               {"tax":2,"lux":2,"sci":6}  (tens of percent; memory write, "method":"ui" = mouse)
 POST /city_manager            {"items":["Temple","Barracks"],"after":{"built":"Temple","items":["Caravan","Barracks"]}}
                               Stage 2: production + entertainers by memory writes (no windows)
+GET  /wonders                 wonder cities, progress, caravans on the way, wonders built
+POST /wonders/plan            {"cities":[0,1,2], "list":["Pyramids", ...]}  change the wonder plan
+GET  /reports                 one report per turn: gold, rates, unhappy, disorder, starving, goals
+GET  /goals ; POST /goals {"type":"cities","target":250,"by_turn":90} ; POST /goals/delete {"id":1}
 GET  /turn_saves              automatic saves/turnNNN_start_*.sav at the start of each turn
-POST /found_cities            {"unit_ids":[1,2], "max_turns":6} -> goto + Build New City tasks
+GET  /alerts                  enemy units near our cities, disorder/riot/starving, wonder race, gold, jobs
+GET  /rivals                  every civ: cities, population, techs, army, wonders built / in production
+GET  /government              government, plan, rates, max rate, rate policy;  POST /gov_rates {"policy":{"Democracy":[4,4,2]}}
+GET  /research                research, beakers/turn, research plan status;  POST /research_plan {"techs":[...]}
+GET  /saves                   every save in civ2api/saves;  POST /rollback {"name":"turn070_start_*.sav"}
+POST /found_cities           {"unit_ids":[1,2], "max_turns":6} -> goto + Build New City tasks
 POST /act                     {"action":"move","dir":"NE"} | {"action":"key","key":"shift+d"} | {"action":"fortify"}
 POST /answer_dialog           {"option": 2, "button": "ok"}
 POST /keys                    {"method": "post"|"sendinput"}
@@ -64,6 +73,8 @@ from .campaign import Campaign
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONSOLE = os.path.join(HERE, "console.html")
 SAVES = os.path.join(os.path.dirname(HERE), "saves")   # civ2api/saves
+RESEARCH_PLAN_PATH = os.path.join(os.path.dirname(HERE), "logs", "research_plan.json")
+GOV_PLAN_PATH = os.path.join(os.path.dirname(HERE), "logs", "government_plan.json")
 
 
 class Hub:
@@ -100,6 +111,16 @@ class Hub:
             install_site_hooks(s, self.runner)
             from .journal import Journal
             s.journal = Journal(os.path.join(os.path.dirname(HERE), "logs", "decisions.jsonl"))
+            try:                                   # the player's government choice survives restarts
+                with open(GOV_PLAN_PATH, encoding="utf-8") as f:
+                    s.government_plan = list(json.load(f)) or s.government_plan
+            except (OSError, ValueError):
+                pass
+            try:
+                with open(RESEARCH_PLAN_PATH, encoding="utf-8") as f:
+                    s.research_plan = list(json.load(f)) or s.research_plan
+            except (OSError, ValueError):
+                pass
             from .turnsave import TurnSaver
             if getattr(self, "saver", None):
                 self.saver.stop()
@@ -223,6 +244,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(popup_scan(s))
             if u.path == "/research_plan":
                 return self._send({"research_plan": s.research_plan})
+            if u.path in ("/alerts", "/rivals", "/government", "/research"):
+                from . import panels
+                from .memwrite import MemWriter
+                HUB.memw = getattr(HUB, "memw", None) or MemWriter(s)
+                if u.path == "/alerts":
+                    return self._send(panels.alerts(s, HUB, HUB.memw))
+                if u.path == "/rivals":
+                    return self._send(panels.rivals(s, HUB.memw))
+                if u.path == "/government":
+                    return self._send(panels.government(s, HUB))
+                return self._send(panels.research(s, HUB.memw, load_reports(60)))
+            if u.path == "/saves":
+                from . import panels
+                return self._send(panels.saves_list(SAVES, int(q.get("limit", 150))))
+            if u.path == "/wonders":
+                return self._send(wonders_view(s))
+            if u.path == "/reports":
+                return self._send(load_reports(int(q.get("limit", 60))))
+            if u.path == "/goals":
+                return self._send(goals_store().evaluate(s, getattr(HUB, "memw", None), len(s.game.huts())))
             if u.path == "/protocol":
                 return self._send(s.journal.since(int(q.get("since", 0)), int(q.get("limit", 300))))
             if u.path == "/turn_saves":
@@ -274,24 +315,7 @@ class Handler(BaseHTTPRequestHandler):
                 HUB.hunts.append(h.start())
                 return self._send({"ok": True, "hunt": h.info()})
             if u.path == "/campaign":
-                if HUB.campaign and HUB.campaign.info()["live"]:
-                    return self._send({"ok": False, "error": "campaign already running"})
-                HUB.campaign = Campaign(s, HUB.runner, SAVES, HUB.hunts,
-                                        target=int(body.get("target", 10)), min_moves=int(body.get("min_moves", 2)),
-                                        max_attempts=int(body.get("max_attempts", 20)),
-                                        max_turns=int(body.get("max_turns", 40)),
-                                        max_turns_to_hut=int(body.get("max_turns_to_hut", 6)),
-                                        skip_others=bool(body.get("skip_others", True)),
-                                        end_turns=bool(body.get("end_turns", True)),
-                                        goal=body.get("goal", "unit"),
-                                        hunter_moves=body.get("hunter_moves"),
-                                        keep_last=bool(body.get("keep_last")))
-                HUB.campaign.pause = lambda: bool(HUB.production and HUB.production.busy)
-                HUB.campaign.happy_guard = lambda st: bool(HUB.production and HUB.production.happy
-                                                           and HUB.production.status == "running"
-                                                           and HUB.production.blocking(st))
-                HUB.campaign.start()
-                return self._send({"ok": True, "campaign": HUB.campaign.info()})
+                return self._send(start_campaign(s, body))
             if u.path == "/campaign/cancel":
                 if HUB.campaign:
                     HUB.campaign.cancel()
@@ -357,9 +381,130 @@ class Handler(BaseHTTPRequestHandler):
                 from .cityops import CityOps
                 HUB.ops = getattr(HUB, "ops", None) or CityOps(s)
                 return self._send(HUB.ops.fix_disorder(int(body["city_id"])))
+            if u.path == "/government_plan":
+                s.government_plan = list(body.get("governments", []))
+                try:
+                    with open(GOV_PLAN_PATH, "w", encoding="utf-8") as f:
+                        json.dump(s.government_plan, f)
+                except OSError:
+                    pass
+                from .journal import note as J
+                J(s, "research", "government plan", f"player's decision: next government {s.government_plan}")
+                return self._send({"ok": True, "government_plan": s.government_plan})
+            if u.path == "/revolution":
+                from .journal import note as J
+                with s._lock:
+                    s.menu("REVOLUTION")
+                time.sleep(1.2)
+                s.refresh()
+                p = s.state().get("popup")
+                if not p or p.get("section") != "REVOLUTION":
+                    return self._send({"ok": False, "error": "REVOLUTION popup did not open", "popup": p})
+                r1 = s.answer_dialog(option=0, button="ok")         # "Yes"
+                time.sleep(1.0)
+                s.refresh()
+                p2 = s.state().get("popup")
+                if p2 and p2.get("section") == "STARTREV":
+                    s.answer_dialog(button="ok")
+                civ = next(c for c in s.state()["civs"] if c["id"] == s.state()["human_civ"])
+                s.revolution_turn = s.state()["turn"]
+                J(s, "research", "revolution", f"approved by the player: Monarchy → {s.government_plan} (Democracy: "
+                  "no corruption, rapture growth, rates up to 100%)", government=civ["government"])
+                return self._send({"ok": True, "government": civ["government"], "plan": s.government_plan})
             if u.path == "/research_plan":
-                s.research_plan = list(body.get("techs", []))
+                s.research_plan = [str(t).strip() for t in body.get("techs", []) if str(t).strip()]
+                try:
+                    with open(RESEARCH_PLAN_PATH, "w", encoding="utf-8") as f:
+                        json.dump(s.research_plan, f)
+                except OSError:
+                    pass
+                from .journal import note as J
+                J(s, "research", "research plan", f"changed by the player in the console: {s.research_plan[:8]}"
+                  f"{' …' if len(s.research_plan) > 8 else ''}")
                 return self._send({"ok": True, "research_plan": s.research_plan})
+            if u.path == "/gov_rates":
+                job = HUB.production
+                if not job or not hasattr(job, "gov_rates"):
+                    return self._send({"ok": False, "error": "city_manager is not running"})
+                job.gov_rates = {str(k): tuple(int(x) for x in v) for k, v in body.get("policy", {}).items()
+                                 if len(v) == 3 and sum(int(x) for x in v) == 10}
+                from .journal import note as J
+                J(s, "city", "rate policy", f"set by the player in the console: rates on government change {job.gov_rates}")
+                return self._send({"ok": True, "rate_policy": {k: list(v) for k, v in job.gov_rates.items()}})
+            if u.path == "/buy":
+                from .buy import buy
+                job = HUB.production
+                was_busy = getattr(job, "busy", False) if job else None
+                if job:
+                    job.busy = True                    # the campaign waits while we use the City Window
+                if HUB.runner:
+                    HUB.runner.enabled, was = False, HUB.runner.enabled
+                try:
+                    time.sleep(1.0)
+                    return self._send(buy(s, int(body["city_index"]), int(body.get("max_price", 0)),
+                                          dry=bool(body.get("dry", False)), why=body.get("why", "set by the player")))
+                finally:
+                    if job:
+                        job.busy = was_busy
+                    if HUB.runner:
+                        HUB.runner.enabled = was
+            if u.path == "/dedupe_city_names":
+                from .memwrite import MemWriter
+                HUB.memw = getattr(HUB, "memw", None) or MemWriter(s)
+                st = s.state()
+                names = {c["name"] for c in st["cities"]}
+                seen, out = {}, []
+                ROMAN = ["II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV"]
+                for c in sorted(st["cities"], key=lambda c: c["index"]):
+                    n = c["name"]
+                    if n not in seen:
+                        seen[n] = 1
+                        continue
+                    if c["owner"] != st["human_civ"]:
+                        continue
+                    k = seen[n]
+                    while True:
+                        suf = " " + (ROMAN[k - 1] if k - 1 < len(ROMAN) else str(k + 1))
+                        new = n[:15 - len(suf)] + suf
+                        k += 1
+                        if new not in names:
+                            break
+                    seen[n] = k
+                    names.add(new)
+                    out.append(HUB.memw.rename_city(c, new, "tell apart cities with the same name (player's request; for Find City)"))
+                s.refresh()
+                return self._send({"ok": True, "renamed": len(out), "items": out[:400]})
+            if u.path == "/rollback":
+                return self._send(rollback(s, body.get("name", ""), bool(body.get("restart_campaign", True))))
+            if u.path == "/goals":
+                g = goals_store().add(body, s.state()["turn"])
+                from .journal import note as J
+                J(s, "goal", "add goal", f"player added a goal: {g['type']} {g.get('target')} "
+                  f"(by turn {g.get('by_turn') or '-'})", goal=g)
+                return self._send({"ok": True, "goal": g})
+            if u.path == "/goals/delete":
+                goals_store().remove(int(body["id"]))
+                return self._send({"ok": True})
+            if u.path == "/wonders/plan":
+                job = HUB.production
+                if not job or not hasattr(job, "wonder_plan"):
+                    return self._send({"ok": False, "error": "city_manager is not running"})
+                w = dict(job.wonders or {})
+                if "cities" in body:
+                    w["cities"] = [int(i) for i in body["cities"]]
+                if "list" in body:
+                    w["list"] = [str(n) for n in body["list"]]
+                job.wonders = w
+                from .journal import note as J
+                J(s, "city", "wonder settings", f"changed by the player in the console: cities {w.get('cities')}, "
+                  f"priority {w.get('list')}")
+                return self._send({"ok": True, "wonders": w})
+            if u.path == "/game_options":
+                from .memwrite import MemWriter
+                HUB.memw = getattr(HUB, "memw", None) or MemWriter(s)
+                out = {k: HUB.memw.set_option(k, bool(v), "the full-screen wonder movie froze the game for a long time")
+                       for k, v in body.items() if k in HUB.memw.OPTIONS}
+                return self._send({"ok": True, **out})
             if u.path == "/city_manager":
                 from .memwrite import MemWriter, CityManager
                 if HUB.production and HUB.production.status == "running":
@@ -367,7 +512,17 @@ class Handler(BaseHTTPRequestHandler):
                 HUB.memw = getattr(HUB, "memw", None) or MemWriter(s)
                 HUB.production = CityManager(s, HUB.memw, body.get("items") or ["Temple", "Barracks"],
                                              body.get("after"), bool(body.get("happy", True)),
-                                             wonders=body.get("wonders"), runner=HUB.runner).start()
+                                             wonders=body.get("wonders"), runner=HUB.runner)
+                HUB.production.report_path = REPORTS_PATH
+                HUB.production.goals = goals_store()
+                HUB.production.huts_left = lambda: len(s.game.huts())
+                HUB.production.hunt_live = lambda: any(h.info()["live"] for h in HUB.hunts) or bool(
+                    HUB.campaign and HUB.campaign.status == "hunting")
+                if "gold_reserve" in body:
+                    HUB.production.gold_reserve = int(body["gold_reserve"])
+                if "buy_wonders" in body:
+                    HUB.production.buy_wonders = bool(body["buy_wonders"])
+                HUB.production.start()
                 return self._send({"ok": True, "job": HUB.production.info()})
             if u.path == "/production/cancel":
                 if HUB.production:
@@ -512,6 +667,146 @@ def find_spiral(s, lo, hi):
             if len(hits) > 40:
                 break
     return {"hits": hits[:20]}
+
+
+def start_campaign(s, body):
+    if HUB.campaign and HUB.campaign.info()["live"]:
+        return {"ok": False, "error": "campaign already running"}
+    HUB.campaign_body = dict(body)
+    HUB.campaign = Campaign(s, HUB.runner, SAVES, HUB.hunts,
+                            target=int(body.get("target", 10)), min_moves=int(body.get("min_moves", 2)),
+                            max_attempts=int(body.get("max_attempts", 20)),
+                            max_turns=int(body.get("max_turns", 40)),
+                            max_turns_to_hut=int(body.get("max_turns_to_hut", 6)),
+                            skip_others=bool(body.get("skip_others", True)),
+                            end_turns=bool(body.get("end_turns", True)),
+                            goal=body.get("goal", "unit"),
+                            hunter_moves=body.get("hunter_moves"),
+                            keep_last=bool(body.get("keep_last")), near_city=int(body.get("near_city", 2)),
+                            explore=bool(body.get("explore", True)))
+    HUB.campaign.pause = lambda: bool(HUB.production and HUB.production.busy)
+
+    def _rail():
+        mw = getattr(HUB, "memw", None)
+        return bool(mw and "RR" in mw.known(s.state()["human_civ"]))
+    HUB.campaign.rail_known = _rail
+    HUB.campaign.wonder_cities = lambda: list((getattr(HUB.production, "wonders", None) or {}).get("cities", []))
+    HUB.campaign.happy_guard = lambda st: bool(HUB.production and HUB.production.happy
+                                               and HUB.production.status == "running"
+                                               and HUB.production.blocking(st))
+    HUB.campaign.start()
+    return {"ok": True, "campaign": HUB.campaign.info()}
+
+
+def rollback(s, name, restart_campaign=True):
+    """Load an earlier save (turn rollback). Village hunts and the campaign are stopped first so
+    nothing reloads its own save on top; the campaign is started again with the same settings."""
+    from . import gameio
+    from .journal import note as J
+    name = os.path.basename(name or "")
+    path = os.path.join(SAVES, name)
+    if not name.lower().endswith(".sav") or not os.path.exists(path):
+        return {"ok": False, "error": f"{name} not found"}
+    was_camp = bool(HUB.campaign and HUB.campaign.info()["live"])
+    if HUB.campaign:
+        HUB.campaign.cancel()
+    for h in HUB.hunts:
+        if h.info()["live"]:
+            h.cancel()
+    t0 = time.time()
+    while time.time() - t0 < 60 and (any(h.info()["live"] for h in HUB.hunts)
+                                      or (HUB.campaign and HUB.campaign.info()["live"])):
+        time.sleep(0.5)
+    if any(h.info()["live"] for h in HUB.hunts):
+        return {"ok": False, "error": "the village hunt will not stop, please try again"}
+    turn0 = s.state()["turn"]
+    if HUB.runner:
+        HUB.runner.enabled, was = False, HUB.runner.enabled
+    try:
+        r = gameio.load_game(s, path)
+    finally:
+        if HUB.runner:
+            HUB.runner.enabled = was
+    s.refresh()
+    J(s, "save", "rollback", f"rolled back by the player in the console: turn {turn0} → {name}", ok=r.get("ok"), file=name)
+    out = {"ok": bool(r.get("ok")), "load": r, "turn": s.state()["turn"], "campaign_restarted": False}
+    if r.get("ok") and restart_campaign and was_camp and getattr(HUB, "campaign_body", None):
+        time.sleep(2)
+        out["campaign_restarted"] = start_campaign(s, HUB.campaign_body).get("ok", False)
+    return out
+
+
+REPORTS_PATH = os.path.join(os.path.dirname(HERE), "logs", "turn_reports.jsonl")
+_GOALS = None
+
+
+def goals_store():
+    global _GOALS
+    if _GOALS is None:
+        from .goals import Goals
+        _GOALS = Goals(os.path.join(os.path.dirname(HERE), "logs", "goals.json"))
+    return _GOALS
+
+
+def load_reports(limit=60):
+    out = []
+    try:
+        with open(REPORTS_PATH, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    # one row per turn (the last one wins after a reload)
+    by_turn = {}
+    for r in out:
+        by_turn[r["turn"]] = r
+    return [by_turn[t] for t in sorted(by_turn)][-limit:]
+
+
+def wonders_view(s):
+    """Wonder cities, their progress, caravans on the way, and every wonder built so far."""
+    from .memwrite import MemWriter
+    st = s.state()
+    r = s.game.rules
+    cost = getattr(r, "improve_cost", [])
+    me = st["human_civ"]
+    cities = {c["index"]: c for c in st["cities"]}
+    job = HUB.production
+    plan = getattr(job, "wonder_plan", {}) or {}
+    settings = getattr(job, "wonders", None)
+    live = ("pending", "running", "waiting_next_turn", "paused_popup")
+    units = {u["id"]: u for u in st["units"]}
+    rows = []
+    for idx in (settings or {}).get("cities", []):
+        c = cities.get(idx)
+        if not c:
+            continue
+        name = c["producing"]["name"]
+        wid = next((i for i, n in enumerate(r.improvements) if n == name), None)
+        need = cost[wid] if wid is not None and wid < len(cost) else 0
+        coming = [t for t in HUB.runner.tasks.values() if t["status"] in live
+                  and t["goal"] == [c["x"], c["y"]] and (units.get(t["unit_id"]) or {}).get("type_name") in ("Caravan", "Freight")]
+        eta = [t.get("eta_turns") for t in coming if t.get("eta_turns") is not None]
+        rows.append({"index": idx, "city": c["name"], "x": c["x"], "y": c["y"], "size": c["size"],
+                     "building": name, "is_wonder": wid is not None and wid >= 39,
+                     "shields": c["shields"], "cost": need, "per_turn": c.get("shield_total"),
+                     "caravans_on_way": len(coming), "nearest_caravan_turns": min(eta) if eta else None,
+                     "caravan_value": 50 * len(coming)})
+    built = []
+    mw = getattr(HUB, "memw", None) or MemWriter(s)
+    HUB.memw = mw
+    for wid, ci in sorted(mw.wonders_built().items()):
+        c = cities.get(ci)
+        built.append({"wonder": r.improvement_name(wid), "city": c["name"] if c else f"#{ci}",
+                      "owner": c["owner"] if c else None, "mine": bool(c and c["owner"] == me)})
+    caravans = [u for u in st["units"] if u["owner"] == me and u["type_name"] in ("Caravan", "Freight")]
+    return {"settings": settings, "plan": {str(k): v for k, v in plan.items()}, "cities": rows,
+            "built": built, "caravans_total": len(caravans),
+            "caravans_building": sum(1 for c in st["cities"] if c["owner"] == me and c["producing"]["name"] in ("Caravan", "Freight")),
+            "job": getattr(job, "status", None)}
 
 
 def site_finder(s, st):

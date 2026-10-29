@@ -31,13 +31,35 @@ LIVE = ("running", "hunting", "needs_decision")
 class Campaign:
     def __init__(self, session, runner, saves_dir, hunts_list, target=10, min_moves=2,
                  max_attempts=20, max_turns=40, max_turns_to_hut=6, skip_others=True, end_turns=True,
-                 goal="unit", hunter_moves=None, keep_last=False):
+                 goal="unit", hunter_moves=None, keep_last=False, near_city=2, explore=True):
         self.s, self.r, self.g = session, runner, session.game
         self.saves_dir, self.hunts = saves_dir, hunts_list
         self.target, self.min_moves, self.max_attempts = target, min_moves, max_attempts
         self.max_turns, self.max_turns_to_hut = max_turns, max_turns_to_hut
         self.skip_others, self.end_turns = skip_others, end_turns
         self.keep_last = keep_last
+        self.near_city = near_city   # goal "city": a village this close to a city never becomes a city -> "tech"
+        self.techs_gained: list[dict] = []
+        self.explore = explore       # hunters with no village to go to uncover the dark (unexplored) land
+        self.exploring: dict[int, list] = {}       # unit id -> target
+        self.no_hut: dict[tuple, int] = {}         # unit key -> turn it had no reachable village
+        self.sleep_idle = True                     # idle units: go to the nearest own city and sentry
+        self.terraform = True                      # Settlers/Engineers irrigate worked tiles
+        self.auto_workers = True                   # first choice: the game's own "Automate" order
+        self.roads = True                          # Engineers also build the city road/railroad network
+        self.road_max = 60
+        self.road_plan = None
+        self.road_status: dict = {}
+        self.road_jobs: dict[int, list] = {}       # unit id -> tile
+        self.road_busy: dict[tuple, tuple] = {}    # tile -> (unit id, turn the order was given)
+        self.rail_known = lambda: False
+        self.wonder_cities = lambda: []
+        self.workers: dict[int, list] = {}         # unit id -> tile to irrigate
+        self.bad_tiles: set = set()
+        self.homing: dict[int, int] = {}           # unit id -> turn it was sent to a city
+        self.explore_tried: dict[tuple, int] = {}  # unit key -> turn it last found nothing to explore
+        self.explored = None                       # {"land": n, "explored": n, "pct": x}
+        self._tiles = None
         self.hunter_moves = hunter_moves or min_moves   # who may hunt (1 = Settlers too)
         self.goal = goal          # "unit": own `target` units with >= min_moves; "city": gain `target` cities
         self.status, self.message = "running", ""
@@ -70,6 +92,9 @@ class Campaign:
                 "min_moves": self.min_moves, "have": self._count(st) if st else None,
                 "hunters": self._hunter_view(st) if st else [], "gained": self.gained[-20:],
                 "start_turn": self.start_turn, "turn": st.get("turn"), "log": self.log[-15:],
+                "techs_gained": self.techs_gained[-20:], "near_city": self.near_city,
+                "explore": self.explore, "exploring": {str(k): v for k, v in self.exploring.items()},
+                "explored": self.explored, "roads": self.road_status,
                 "live": self.status in LIVE}
 
     # ------------------------------------------------------------------ helpers
@@ -89,8 +114,11 @@ class Campaign:
         ut = self.g.unit_types[u["type"]]
         return ut["move_points"] >= n * self.g.road_mult and ut["domain"] == "ground"
 
+    WORKERS = ("Settlers", "Engineers")
+    NOT_HUNTERS = ("Settlers", "Engineers", "Caravan", "Freight", "Diplomat", "Spy")   # Freight: wonder carriers
+
     def _is_hunter_type(self, u):
-        return self._moves_ok(u, self.hunter_moves)
+        return u["type_name"] not in self.NOT_HUNTERS and self._moves_ok(u, self.hunter_moves)
 
     def _count(self, st):
         if self.goal == "city":
@@ -112,6 +140,225 @@ class Campaign:
 
     def _adjacent(self, u, hut, W2):
         return any(((u["x"] + dx) % W2, u["y"] + dy) == tuple(hut) for dx, dy in DIRS.values())
+
+    def _dist(self, a, b, W2):
+        dx = abs(a[0] - b[0])
+        dx = min(dx, W2 - dx)
+        dy = abs(a[1] - b[1])
+        return max(dy, (dx + dy) // 2)
+
+    def _explore(self, st, hunters, W2):
+        """Hunters with no village: go to the nearest reachable land tile that uncovers the
+        most unexplored tiles (the tile and its 8 neighbours), spread at least 4 tiles apart."""
+        live = ("pending", "running", "waiting_next_turn", "paused_popup")
+        turn = st["turn"]
+        self.exploring = {k: v for k, v in self.exploring.items()
+                          if (self.r.tasks.get(k) or {}).get("status") in live}
+        # a carrier that was sent exploring by mistake (Freight has 2 moves): call it back
+        for u in st["units"]:
+            if u["id"] in self.exploring and u["type_name"] in self.NOT_HUNTERS:
+                self.exploring.pop(u["id"], None)
+                self.r.cancel(u["id"])
+        tries = self.__dict__.setdefault("_explore_tries", {})
+        idle = [u for u in hunters if self._key(u) not in self.assign and u["id"] not in self.exploring
+                and (self.r.tasks.get(u["id"]) or {}).get("status") not in live
+                and self.explore_tried.get(self._key(u)) != turn
+                and tries.get((u["id"], turn), 0) < 3]           # a target that fails at once: not again this turn
+        if not idle:
+            return
+        if self._tiles is None or self._tiles[0] != turn or time.time() - self._tiles[1] > 60:
+            ms = st["map"]
+            self._tiles = (turn, time.time(), self.g.read_tiles(0, 0, ms["width2"], ms["height"]))
+        tiles = self._tiles[2]
+        bit = 1 << st["human_civ"]
+        land = [t for t in tiles if t["terrain"] != "Ocean"]
+        dark = {(t["x"], t["y"]) for t in tiles if not (t["explored_mask"] & bit)}
+        n_exp = sum(1 for t in land if t["explored_mask"] & bit)
+        self.explored = {"land": len(land), "explored": n_exp, "pct": round(100 * n_exp / max(1, len(land)), 1),
+                         "dark_tiles": len(dark)}
+        if not dark:
+            return
+        planner = self.r.planner(st)
+        taken = list(self.exploring.values())
+        for u in idle:
+            info = self.r._unit_info(u)
+            reach = planner.reach(info, info["full_mp"], u.get("move_points_left"), 8)
+            best = None
+            for xy, turns in reach.items():
+                gain = sum(1 for dx, dy in [(0, 0)] + list(DIRS.values())
+                           if ((xy[0] + dx) % W2, xy[1] + dy) in dark)
+                if gain < 2 or any(self._dist(xy, t, W2) < 4 for t in taken):
+                    continue
+                k = (turns, -gain)
+                if best is None or k < best[0]:
+                    best = (k, xy)
+            if best is None:
+                self.explore_tried[self._key(u)] = turn
+                continue
+            (turns, ngain), xy = best
+            tries[(u["id"], turn)] = tries.get((u["id"], turn), 0) + 1
+            r = self.r.add(u["id"], *xy)
+            if r.get("ok"):
+                self.exploring[u["id"]] = list(xy)
+                taken.append(xy)
+                self._note(f"{u['type_name']} #{u['id']} → unexplored area {xy} ({turns} turns, reveals {-ngain} tiles)")
+                J(self.s, "campaign", "explore",
+                  f"{u['type_name']} #{u['id']}: no village to go to → nearest unexplored area {xy} ({turns} turns); "
+                  f"going there reveals {-ngain} unexplored tiles; ≥4 tiles from other explorers "
+                  f"({self.explored['pct']}% of the map explored)", unit_id=u["id"], target=list(xy))
+            else:
+                self.explore_tried[self._key(u)] = turn
+
+    IRRIGABLE = {"Grassland": 5, "Plains": 5, "Desert": 5, "Hills": 10, "Tundra": 10}   # RULES.TXT turns
+    CARDINAL = ((0, -2), (2, 0), (0, 2), (-2, 0))
+
+    def _terraform(self, au, st) -> bool:
+        """Settlers/Engineers (player: "engineer hiihed anhaar"): irrigate the city tiles that
+        are worked and lack irrigation, water next to them (river on the tile, or ocean / river /
+        irrigation / a city on a N-E-S-W neighbour). On the target tile -> I; else go there."""
+        if self.roads and self._road_work(au, st):
+            return True
+        if self.auto_workers:
+            # player's tip: the game's own settler automation. NOT Ctrl+K: in this game Ctrl+K is
+            # "Toggle Cheat Mode" (Kingdom menu, seen live). Find the Orders item by its text.
+            def walk(items):
+                for it in items:
+                    name = (it.get("text") or "").split("\t")[0].strip().lower()
+                    if it.get("id") not in (None, 0xFFFFFFFF) and name.startswith("automate"):
+                        return it
+                    r = walk(it.get("children") or [])
+                    if r:
+                        return r
+                return None
+            it = walk(win32.menu_tree(self.s.main_hwnd()))
+            if it:
+                win32.post_command(self.s.main_hwnd(), it["id"])
+                J(self.s, "campaign", "automate worker", f"{au['type_name']} #{au['id']}: game's own automation "
+                  f"('{it['text'].split(chr(9))[0]}') → the game picks irrigation, roads and mines itself",
+                  unit_id=au["id"])
+                return True
+        W2 = st["map"]["width2"]
+        turn = st["turn"]
+        if self._tiles is None or self._tiles[0] != turn or time.time() - self._tiles[1] > 60:
+            ms = st["map"]
+            self._tiles = (turn, time.time(), self.g.read_tiles(0, 0, ms["width2"], ms["height"]))
+        T = {(t["x"], t["y"]): t for t in self._tiles[2]}
+        me = st["human_civ"]
+        mine = [c for c in st["cities"] if c["owner"] == me]
+        cxy = {(c["x"], c["y"]) for c in st["cities"]}
+        from .memmap import CITY_TILES
+        worked = {}
+        for c in mine:
+            for i in c.get("worked_tiles", []):
+                if i < 20:
+                    dx, dy = CITY_TILES[i]
+                    worked[((c["x"] + dx) % W2, c["y"] + dy)] = c["name"]
+
+        def watered(xy):
+            t = T.get(xy)
+            if t and t["river"]:
+                return True
+            for dx, dy in self.CARDINAL:
+                n = T.get(((xy[0] + dx) % W2, xy[1] + dy))
+                if n and (n["terrain"] == "Ocean" or n["river"] or n["irrigation"] or n["farmland"]
+                          or (n["x"], n["y"]) in cxy):
+                    return True
+            return False
+        target = self.workers.get(au["id"])
+        here = (au["x"], au["y"])
+        if target and tuple(target) == here:
+            t = T.get(here)
+            if t and not t["irrigation"] and t["terrain"] in self.IRRIGABLE:
+                J(self.s, "campaign", "irrigate", f"{au['type_name']} #{au['id']} {here}: {t['terrain']}, water nearby → "
+                  f"Irrigation (+1 food, tile worked by {worked.get(here, 'a city')})", unit_id=au["id"], tile=list(here))
+                self.s.press("I")
+                self.workers.pop(au["id"], None)
+                self.bad_tiles.add(here)          # not again even if the order did not take
+                return True
+            self.workers.pop(au["id"], None)
+        taken = {tuple(v) for v in self.workers.values()}
+        cands = [xy for xy in worked if xy not in taken and xy not in self.bad_tiles and xy not in cxy
+                 and (T.get(xy) or {}).get("terrain") in self.IRRIGABLE and not T[xy]["irrigation"]
+                 and not T[xy]["mine"] and watered(xy)]
+        if not cands:
+            return False
+        cands.sort(key=lambda xy: (self._dist(here, xy, W2), self.IRRIGABLE[T[xy]["terrain"]]))
+        for xy in cands[:6]:
+            if xy == here:
+                self.workers[au["id"]] = list(xy)
+                return self._terraform(au, st)
+            r = self.r.add(au["id"], *xy)
+            if r.get("ok"):
+                self.workers[au["id"]] = list(xy)
+                J(self.s, "campaign", "go irrigate", f"{au['type_name']} #{au['id']} → {xy} ({T[xy]['terrain']}, "
+                  f"worked by {worked[xy]}, not irrigated, water nearby), {r['plan']['turns']} turns",
+                  unit_id=au["id"], tile=list(xy))
+                return True
+            self.bad_tiles.add(xy)
+        return False
+
+    def _road_work(self, au, st) -> bool:
+        """Road / railroad network between our cities (roadnet.plan, a minimum spanning tree),
+        built by at most `road_max` Engineers that come free; the rest keep irrigating.
+        On the tile: R (road; on a road with Railroad known the same order lays railroad)."""
+        from . import roadnet
+        if au["type_name"] != "Engineers":
+            return False
+        W2 = st["map"]["width2"]
+        turn = st["turn"]
+        if self._tiles is None or self._tiles[0] != turn or time.time() - self._tiles[1] > 60:
+            ms = st["map"]
+            self._tiles = (turn, time.time(), self.g.read_tiles(0, 0, ms["width2"], ms["height"]))
+        T = {(t["x"], t["y"]): t for t in self._tiles[2]}
+        me = st["human_civ"]
+        rail = bool(self.rail_known())
+        if self.road_plan is None or self.road_plan[0] != turn:
+            mine = [c for c in st["cities"] if c["owner"] == me]
+            net = roadnet.plan(self._tiles[2], mine, W2, start=set(self.wonder_cities()))
+            self.road_plan = (turn, net)
+            todo = [p for p in net["tiles"] if not T[p]["road"] or (rail and not T[p]["railroad"])]
+            self.road_status = {"tiles": len(net["tiles"]), "links": len(net["edges"]), "todo": len(todo),
+                                "road": sum(1 for p in net["tiles"] if T[p]["road"]),
+                                "railroad": sum(1 for p in net["tiles"] if T[p]["railroad"]), "rail_known": rail}
+        net = self.road_plan[1]
+
+        def need(p):
+            t = T.get(p)
+            return bool(t) and (not t["road"] or (rail and not t["railroad"]))
+        live = ("pending", "running", "waiting_next_turn", "paused_popup")
+        # tiles somebody is working on (a road takes a few turns): keep them out of the queue
+        self.road_busy = {p: v for p, v in self.road_busy.items() if turn - v[1] <= 6 and need(p)}
+        self.road_jobs = {k: v for k, v in self.road_jobs.items()
+                          if (self.r.tasks.get(k) or {}).get("status") in live or k == au["id"]}
+        here = (au["x"], au["y"])
+        tgt = self.road_jobs.pop(au["id"], None)
+        if tgt and tuple(tgt) == here and need(here):
+            t = T[here]
+            what = "Railroad" if t["road"] else "Road"
+            J(self.s, "campaign", "build road", f"Engineer #{au['id']} {here}: {what} (network linking the cities, "
+              f"{t['terrain']}{' + river' if t['river'] else ''})", unit_id=au["id"], tile=list(here))
+            self.s.press("R")
+            self.road_busy[here] = (au["id"], turn)
+            return True
+        if len({k for k in self.road_jobs}) + len({v[0] for v in self.road_busy.values()}) >= self.road_max:
+            return False                       # enough Engineers on roads: this one irrigates
+        queue = [p for p in net["tiles"][:400] if need(p) and p not in self.road_busy
+                 and p not in {tuple(v) for v in self.road_jobs.values()}]
+        if not queue:
+            return False
+        queue.sort(key=lambda p: self._dist(here, p, W2))
+        for p in queue[:5]:
+            if p == here:
+                self.road_jobs[au["id"]] = list(p)
+                return self._road_work(au, st)
+            r = self.r.add(au["id"], *p)
+            if r.get("ok"):
+                self.road_jobs[au["id"]] = list(p)
+                J(self.s, "campaign", "go build road", f"Engineer #{au['id']} → {p} on the city-linking road network "
+                  f"({r['plan']['turns']} turns); up to {self.road_max} Engineers on roads, the rest irrigate",
+                  unit_id=au["id"], tile=list(p))
+                return True
+        return False
 
     def _menu(self, label):
         main = self.s.main_hwnd()
@@ -156,6 +403,11 @@ class Campaign:
         if p:
             # option rows with no text (e.g. Domestic Advisor DISORDER) are informational
             auto = p.get("section") in ("PICKGOVT", "CARAVANMENU")          # answered by plan/rule
+            if "select unit to activate" in (p.get("title") or "").lower() and p.get("options"):
+                J(self.s, "campaign", "answer popup", "Select Unit To Activate: several units on one tile → picked the "
+                  "first (the runner selects tasked units itself afterwards)")
+                self.s.answer_dialog(option=0, button="ok")
+                return None
             if not auto and p.get("options") and any((o.get("text") or "").strip() for o in p["options"]):
                 self._set("needs_decision", f"popup with choices: {p.get('title')} — please answer it from the console")
                 return None
@@ -180,15 +432,18 @@ class Campaign:
         keys = {self._key(u) for u in hunters}
         self.assign = {k: h for k, h in self.assign.items() if k in keys and h in huts}
         taken = set(self.assign.values())
+        turn = st["turn"]
         for u in hunters:
             k = self._key(u)
-            if k in self.assign:
-                continue
+            if k in self.assign or self.no_hut.get(k) == turn:
+                continue                 # no reachable village for this unit this turn: do not re-plan every tick
             best = None
             for h in sorted(huts - taken, key=lambda h: abs(h[0] - u["x"]) + abs(h[1] - u["y"]))[:8]:
                 pl = self.r.plan(u["id"], *h, st=st)
                 if pl.get("ok") and pl["turns"] <= self.max_turns_to_hut and (best is None or pl["turns"] < best[0]):
                     best = (pl["turns"], h)
+            if not best:
+                self.no_hut[k] = turn
             if best:
                 self.assign[k] = best[1]
                 taken.add(best[1])
@@ -197,8 +452,11 @@ class Campaign:
                   f"{u['type_name']} #{u['id']} ({u['x']},{u['y']}): took the 8 nearest villages not claimed by another hunter, "
                   f"ran the pathfinder on each and picked the one with the fewest turns ({best[0]} turns ≤ {self.max_turns_to_hut})",
                   unit_id=u["id"], village=list(best[1]))
-        if not self.assign and not any(t["status"] in ("pending", "running") for t in self.r.tasks.values()):
-            self._set("stopped", f"no reachable village nearby ({have}/{self.target})")
+        if self.explore:
+            self._explore(st, hunters, W2)
+        if not self.assign and not any(t["status"] in ("pending", "running", "waiting_next_turn", "paused_popup")
+                                       for t in self.r.tasks.values()):
+            self._set("stopped", f"no reachable village and no unexplored area left ({have}/{self.target})")
             return "stop"
         # ---- send hunters next to their villages
         for u in hunters:
@@ -236,12 +494,27 @@ class Campaign:
               + ("load if no new city appears" if self.goal == "city" else f"load if no unit with {self.min_moves}+ moves appears"),
               unit_id=au["id"], village=list(hut))
             before = self._count(st)
+            hut_goal, near = self.goal, None
+            if self.goal == "city":
+                near = min(((max(abs(c["y"] - hut[1]), (min(abs(c["x"] - hut[0]), W2 - abs(c["x"] - hut[0]))
+                                                        + abs(c["y"] - hut[1])) // 2), c["name"])
+                            for c in st["cities"]), default=None)
+                if near and near[0] <= self.near_city:
+                    hut_goal = "tech"
+                    J(self.s, "campaign", "village goal tech",
+                      f"village {tuple(hut)} is {near[0]} tiles from {near[1]} — villages next to a city never "
+                      f"become cities (≤{self.near_city}), so goal: a technology; load if none",
+                      village=list(hut), city=near[1], dist=near[0])
             h = HutHunt(self.s, self.r, self.saves_dir, au["id"], hut, self.min_moves, self.max_attempts,
-                        goal=self.goal, keep_last=self.keep_last)
+                        goal=hut_goal, keep_last=self.keep_last)
             self.hunts.append(h.start())
             h._thread.join()
             res = h.info()
-            if res["status"] == "success":
+            if res["status"] == "success" and hut_goal == "tech":
+                r0 = res["result"]
+                self.techs_gained.append({"village": list(hut), "techs": r0.get("techs"), "attempts": res["attempts"]})
+                self._note(f"gained: +{r0.get('techs')} tech ({res['attempts']} attempts)")
+            elif res["status"] == "success":
                 r0 = res["result"]
                 what = (r0.get("cities") or [{}])[0].get("name") if self.goal == "city" \
                     else (r0["gained"] or [{}])[0].get("type")
@@ -262,6 +535,30 @@ class Campaign:
         if self.skip_others:
             time.sleep(0.6)
             st2 = self.s.state()
+            if st2.get("active_unit") == au["index"] and not st2.get("popup") and au["type_name"] in self.WORKERS \
+                    and self.terraform:
+                if self._terraform(au, st2):
+                    return None
+            if st2.get("active_unit") == au["index"] and not st2.get("popup") and self.sleep_idle:
+                # player's rule "ajilgui unit caravanuudiig oirhon hotod oruulj untuul"
+                mine = [c for c in st2["cities"] if c["owner"] == me]
+                here = next((c for c in mine if (c["x"], c["y"]) == (au["x"], au["y"])), None)
+                if here:
+                    J(self.s, "campaign", "sleep unit", f"{au['type_name']} #{au['id']}: idle in {here['name']} "
+                      "→ Sentry (sleeps; not selected every turn, woken when given a task)",
+                      unit_id=au["id"], city=here["name"])
+                    self.s.press("S")
+                    return None
+                if mine and self.homing.get(au["id"]) != st2["turn"]:
+                    W2 = st2["map"]["width2"]
+                    c = min(mine, key=lambda c: self._dist((au["x"], au["y"]), (c["x"], c["y"]), W2))
+                    r = self.r.add(au["id"], c["x"], c["y"])
+                    self.homing[au["id"]] = st2["turn"]
+                    if r.get("ok"):
+                        J(self.s, "campaign", "go to city", f"{au['type_name']} #{au['id']}: idle → heading to the nearest city, "
+                          f"{c['name']} ({r['plan']['turns']} turns), will sleep there", unit_id=au["id"],
+                          city=c["name"])
+                        return None
             if st2.get("active_unit") == au["index"] and not st2.get("popup"):
                 J(self.s, "campaign", "skip unit", f"{au['type_name']} #{au['id']}: no campaign task "
                   "(not a hunter, or nothing to do this turn) → Skip Turn, no orders given", unit_id=au["id"])

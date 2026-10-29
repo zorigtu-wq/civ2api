@@ -30,6 +30,10 @@ Lets an AI agent (or you) play *Civilization II: Multiplayer Gold Edition* throu
 | `civ2api/memwrite.py` | Stage 2: whitelisted memory writes with read-back |
 | `civ2api/gameio.py`, `civ2api/turnsave.py` | Save/load via Civ2's menu; automatic save at the start/end of every turn |
 | `civ2api/journal.py` | Decision protocol: every agent action with the reason, in `logs/decisions.jsonl` |
+| `civ2api/goals.py` | Player goals (cities, gold, wonder, tech, government, no disorder/starving, villages left) with live progress |
+| `civ2api/panels.py` | Data for the console panels: alerts, rivals, government, research, saves |
+| `civ2api/roadnet.py` | Road/railroad network linking all cities (minimum spanning tree over road-building cost) |
+| `civ2api/buy.py` | Buy production with gold through the City Window's own Buy button |
 | `mvp_units.py`, `mvp_move.py` | MVP checks |
 | `tools/backup_game.py` | Back up the game folder + CIV2.EXE sha256 |
 | `tools/file_bridge.py` | File-queue bridge for agents that can't reach `127.0.0.1` |
@@ -79,6 +83,15 @@ python -m civ2api.server
 | POST | `/end_turn` | Save, then end the turn |
 | GET | `/turn_saves` | List of per-turn saves |
 
+| GET | `/alerts` | Enemy units near cities, disorder/riot/starving, wonder race, low gold, stopped jobs |
+| GET | `/rivals` | Every civ: cities, population, techs, army, wonders built / in production |
+| GET | `/government`, `/research` | Government, rates, plan; research queue status. `POST /gov_rates`, `/government_plan`, `/revolution`, `/research_plan` |
+| GET/POST | `/goals`, `/goals/delete` | Player goals with progress |
+| GET | `/reports` | One report per turn (gold, rates, unhappy, disorder, starving, goals) |
+| GET/POST | `/wonders`, `/wonders/plan` | Wonder cities, progress, caravans on the way |
+| POST | `/buy` | Buy the current production of a city |
+| GET/POST | `/saves`, `/rollback` | All saves; roll back to one (stops jobs, loads, restarts the campaign) |
+
 Endpoints under `/dev/*` are low-level debugging helpers.
 
 Each `act` sends keystrokes, re-reads state until it settles, and returns the events caused by that action.
@@ -92,7 +105,7 @@ Running `run_console.bat` starts the server windowless (`pythonw -m civ2api.serv
 - **Browser shortcuts:** numpad or arrows = move; F, S, W, B, R, I, M, H; Space = skip. While a popup is open: Enter, Esc, digits = choose option.
 - **Popup:** title, lines, options and buttons are shown in a Civ2-style window. "Hide" closes it so you can see the map; the "● Popup open" button at the top reopens it.
 - **Villages:** shown on the map as yellow huts. The "Village" tab is sorted by distance from the active unit. API: `GET /huts`, bridge: `{"op":"huts"}`. Locations are computed from the map seed with the hut formula, counting only unowned tiles.
-- **Tabs:** My units, Cities, Civs, Villages, Decisions (live via long-poll).
+- **Tabs:** My units, My cities (filters: riot, disorder, starving, wonder, no Temple, caravans), Alerts, Charts (cities, techs, population, rates, problem cities over time), Government, Research, Rivals, Villages, Turn reports, Goals, Saves (one-click rollback), Event log, Decisions — all live via long-poll.
 - **`keys` option:** `post` (default, works even with the game in the background) or `sendinput`.
 
 Real Civ2 popups are mirrored in the console and can be answered from there:

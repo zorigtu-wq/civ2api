@@ -354,7 +354,7 @@ class Session:
                         self.log.extend([E._ev("research_choice", tech=tech)])
                         J(self, "research", f"research {tech}",
                           f"offered: {', '.join(r['name'] for r in popup['list'])}. First match in the "
-                          f"research plan (Monarchy → Currency/Trade → Philosophy → Monotheism) is {tech}")
+                          f"research plan is {tech}")
                         break
             seq0 = self.log.last_seq()
             ctl = next((c for c in popup.get("option_controls") or [] if c["index"] == option), None) \
@@ -453,7 +453,7 @@ class Session:
                 "popup": self._last.get("popup"),
                 **({} if closed else {"error": "popup still open", "diag": self.diag()})}
 
-    def activate_unit(self, unit_id: int, max_steps: int = 60) -> dict:
+    def activate_unit(self, unit_id: int, max_steps: int = 220) -> dict:
         """Make a specific own unit the active one (also wakes a sleeping/fortified unit):
         View Pieces mode -> walk the map cursor onto the unit with the numpad (cursor is
         read back from memory after every step) -> Orders/Activate Unit."""
@@ -480,8 +480,12 @@ class Session:
                 cx, cy = self._last["cursor"]
                 if (cx, cy) == (u["x"], u["y"]):
                     break
+                W2 = (self._last.get("map") or {}).get("width2") or 0
                 def dist(x, y):
-                    da, db = (u["x"] - x + u["y"] - y) / 2, (u["y"] - y - (u["x"] - x)) / 2
+                    dx = u["x"] - x
+                    if W2:
+                        dx = (dx + W2 // 2) % W2 - W2 // 2          # round world: shortest way round
+                    da, db = (dx + u["y"] - y) / 2, (u["y"] - y - dx) / 2
                     return max(abs(da), abs(db))
                 d = min(DIR_DELTA, key=lambda k: dist(cx + DIR_DELTA[k][0], cy + DIR_DELTA[k][1]))
                 win32.post_key(self.key_target(), DIRECTIONS[d])
@@ -493,6 +497,16 @@ class Session:
                 return {"ok": False, "error": f"cursor did not reach the unit ({self._last['cursor']})"}
             menu("Activate Unit")
             time.sleep(0.5)
+            # several units on the tile: "Select Unit To Activate" lists "American Caravan (Phoenix, Hides)"
+            self.refresh()
+            p = self._last.get("popup")
+            if p and "activate" in (p.get("title") or "").lower() and p.get("options"):
+                home = next((c["name"] for c in self._last["cities"] if c["index"] == u.get("home_city")), None)
+                opts = p["options"]
+                pick = next((o for o in opts if u["type_name"] in o["text"] and home and f"({home}," in o["text"]), None) \
+                    or next((o for o in opts if u["type_name"] in o["text"]), opts[0])
+                self.answer_dialog(option=pick["index"], button="ok")
+                time.sleep(0.4)
         self._settle(0.3, 2.0)
         st = self._last
         ok = st.get("active_unit") == u["index"]
@@ -506,7 +520,7 @@ class Session:
             raise ValueError(f"menu item {label!r} not found")
         win32.post_command(self.main_hwnd(), cid)
 
-    def _cursor_to(self, x: int, y: int, max_steps: int = 80) -> bool:
+    def _cursor_to(self, x: int, y: int, max_steps: int = 220) -> bool:
         """Walk the View Pieces cursor to (x, y) with numpad keys (cursor read from memory)."""
         for _ in range(max_steps):
             self.refresh()
@@ -574,6 +588,53 @@ class Session:
         self.refresh()
         return {"ok": bool(cw), "city": c["name"], "city_window": cw,
                 **({} if cw else {"error": "City Window did not open", "popup": self._last.get("popup")})}
+
+    def find_city(self, city_id: int) -> dict:
+        """Open a City Window with the game's Find City (Shift+C, popup FINDCITY: a list of
+        city names; the player's tip): pick the row by name, the map centres on the city,
+        then click the centre of the map. Needs unique city names."""
+        with self._lock:
+            self.refresh()
+            st = self._last
+            c = next((x for x in st["cities"] if x["id"] == city_id), None)
+            if c is None:
+                return {"ok": False, "error": "city not found"}
+            if st.get("popup"):
+                return {"ok": False, "error": "a popup is open"}
+            if self.city_window():
+                self.press("ESC", target=self.main_hwnd())
+                time.sleep(0.4)
+            self.press("SHIFT+C")
+            p = None
+            for _ in range(15):
+                time.sleep(0.2)
+                self.refresh()
+                p = self._last.get("popup")
+                if p and p.get("section") == "FINDCITY":
+                    break
+            if not p or p.get("section") != "FINDCITY":
+                return {"ok": False, "error": "FINDCITY did not open", "popup": p}
+            rows = [r for r in (p.get("list") or []) if r.get("text") == c["name"]]
+            if len(rows) != 1:
+                self.answer_dialog(button="cancel")
+                return {"ok": False, "error": f"{len(rows)} rows named {c['name']!r} (names must be unique)"}
+            # player's tip: typing letters of the name jumps the list there; then arrows for the rest
+            for ch in c["name"][:1].lower():
+                if ch.isalpha():
+                    self.press(ch)
+                    time.sleep(0.25)
+            r = self.answer_dialog(option=rows[0]["index"], button="ok")
+            time.sleep(0.6)
+            self.refresh()
+            if self._last.get("popup"):
+                self.answer_dialog(button="cancel")
+                return {"ok": False, "error": "FINDCITY still open", "answer": r}
+            win32.click_window(self.map_window())
+            time.sleep(0.8)
+            cw = self.city_window()
+        self.refresh()
+        return {"ok": bool(cw), "city": c["name"], "city_window": cw,
+                **({} if cw else {"error": "City Window did not open after Find City"})}
 
     # ------------------------------------------------------------------ helpers
     def _active_unit(self, st: dict | None) -> dict | None:
